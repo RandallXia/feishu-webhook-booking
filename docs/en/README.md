@@ -1,6 +1,6 @@
 # feishu-webhook-booking
 
-A minimal FastAPI webhook bridge for iPhone Shortcuts -> Feishu Bitable.
+A minimal FastAPI webhook bridge for [iPhone Shortcuts](https://www.icloud.com/shortcuts/74ac462a4e2e4cf0ac2f33d20b5b4617) -> Feishu Bitable.
 
 ## Language
 
