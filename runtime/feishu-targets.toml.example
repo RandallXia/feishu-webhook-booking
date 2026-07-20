@@ -1,0 +1,30 @@
+# 语言切换 / Language
+# 中文（默认）: [runtime/feishu-targets.toml.example](runtime/feishu-targets.toml.example)
+# English: [runtime/feishu-targets.toml.example](../docs/en/runtime-config.md)
+
+default_alias = "2026"
+
+[targets."2025"]
+year = 2025
+app_token = "bascn_replace_me_2025"
+table_id = "tbl_replace_me_2025"
+record_id = "rec_replace_me_2025"
+original_field_name = "原始信息"
+enabled = true
+
+[targets."2026"]
+year = 2026
+app_token = "bascn_replace_me_2026"
+table_id = "tbl_replace_me_2026"
+record_id = "rec_replace_me_2026"
+original_field_name = "原始信息"
+enabled = true
+
+# 可选禁用目标示例 / Optional disabled target example
+[targets."test-archive"]
+year = 2024
+app_token = "bascn_replace_me_test"
+table_id = "tbl_replace_me_test"
+record_id = "rec_replace_me_test"
+original_field_name = "原始信息"
+enabled = false

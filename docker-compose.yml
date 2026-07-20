@@ -1,0 +1,17 @@
+version: '3.9'
+
+services:
+  feishu-webhook-booking:
+    build: .
+    container_name: feishu-webhook-booking
+    restart: unless-stopped
+    ports:
+      - "2398:2398"
+    # Mount external runtime files here.
+    # Copy .env.example to ./runtime/feishu-webhook.env.
+    # Create ./runtime/feishu-targets.toml for yearly target routing.
+    environment:
+      FEISHU_ENV_FILE: /runtime/feishu-webhook.env
+      FEISHU_TARGETS_FILE: /runtime/feishu-targets.toml
+    volumes:
+      - ./runtime:/runtime:ro

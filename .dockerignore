@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+__pycache__
+.claude
+*.pyc
+.env
+*.md
+.dockerignore
+app/__pycache__
+test

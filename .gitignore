@@ -1,0 +1,34 @@
+# Python / Python 产物
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+test/
+requirements-dev.txt
+
+# Runtime secrets and local config / 运行时敏感文件与本地配置
+.env
+.env.*
+!.env.example
+runtime/*
+!runtime/*.example
+
+# Logs / 日志
+*.log
+logs/
+
+# Local tools and assistant state / 本地工具与助手状态
+.claude/
+CLAUDE.md
+.agents/
+memory/
+*-cook.md
+
+# OS and editor noise / 系统与编辑器噪声
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
