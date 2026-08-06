@@ -1,6 +1,6 @@
 # feishu-webhook-booking
 
-一个面向 [iPhone Shortcuts](https://www.icloud.com/shortcuts/709489cc08e54123a75a14f503d04188) + 飞书多维表格的轻量 FastAPI webhook 桥接器。
+一个面向 [iPhone Shortcuts](https://www.icloud.com/shortcuts/d3e8e955242a49e29348cc3dd21a59e4) + [飞书多维表格](https://my.feishu.cn/base/EZnpbAQ7PannZCsydKtcErmDn0c?table=tblsigCGVKezoL7M&view=vewBy9BPY3)的轻量 FastAPI webhook 桥接器。
 
 ## 语言切换 / Language
 
