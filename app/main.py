@@ -8,8 +8,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from .ai_extractor import AiExtractor
+from .ai_profile import AiProfile, parse_profile
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
+from .pipeline import AiPipeline, PipelineResult
 from .target_registry import TargetRegistry, TargetRegistryError, TargetRegistryUnavailableError, TargetSelectorError
 
 
@@ -42,6 +45,13 @@ class WebhookSuccessResponse(BaseModel):
     record_id: str
     book_alias: str
     message: str
+    # AI stage fields — present only when AI_ENABLED=true and the pipeline ran.
+    # response_model_exclude_none on the route drops these when None, so the
+    # disabled-mode response is byte-identical to master.
+    ai_status: str | None = None
+    ai_record_id: str | None = None
+    ai_warnings: list[str] | None = None
+    ai_extracted: dict | None = None
 
 
 @asynccontextmanager
@@ -56,6 +66,20 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.feishu_client = FeishuClient(settings)
     app.state.target_registry = target_registry
+
+    # AI stage is constructed only when AI_ENABLED=true; parse_profile failures
+    # fail startup (aligns with target_registry.load_initial fail-fast above).
+    if settings.ai_enabled:
+        profile = parse_profile(settings.ai_profile_file)
+        extractor = AiExtractor(settings)
+        app.state.ai_extractor = extractor
+        app.state.ai_profile = profile
+        app.state.ai_pipeline = AiPipeline(settings, extractor, app.state.feishu_client)
+    else:
+        app.state.ai_extractor = None
+        app.state.ai_profile = None
+        app.state.ai_pipeline = None
+
     yield
 
 
@@ -81,6 +105,9 @@ async def health(request: Request) -> dict[str, object]:
 @app.post(
     "/v1/webhook/ocr",
     response_model=WebhookSuccessResponse,
+    # Drop ai_* fields when None so the disabled-mode response is byte-identical
+    # to master (regression lock: test_regression_disabled_response_has_5_keys).
+    response_model_exclude_none=True,
     responses={
         401: {"model": WebhookErrorResponse},
         422: {"model": WebhookErrorResponse},
@@ -217,11 +244,43 @@ async def ingest_ocr(
         record_id,
         target.alias,
     )
+
+    # AI stage runs only after the original-text write succeeded. The pipeline
+    # never raises (AiPipeline.run catches Exception), so this block cannot
+    # introduce a new 5xx path; an AI failure still returns 200.
+    ai_status: str | None = None
+    ai_record_id: str | None = None
+    ai_warnings: list[str] | None = None
+    ai_extracted: dict | None = None
+    ai_pipeline: AiPipeline | None = getattr(request.app.state, "ai_pipeline", None)
+    if settings.ai_enabled and ai_pipeline is not None:
+        profile: AiProfile = request.app.state.ai_profile
+        result: PipelineResult = await ai_pipeline.run(
+            original_text=original_text,
+            target=target,
+            profile=profile,
+        )
+        ai_status = result.ai_status
+        ai_record_id = result.bill_record_id
+        ai_warnings = result.warnings if result.warnings else None
+        ai_extracted = result.extracted if result.extracted else None
+        logger.info(
+            "ai stage done request_id=%s ai_status=%s ai_record_id=%s warnings=%s",
+            request_id,
+            ai_status,
+            ai_record_id or "",
+            len(result.warnings),
+        )
+
     return WebhookSuccessResponse(
         request_id=request_id,
         record_id=record_id,
         book_alias=target.alias,
         message="configured record updated and 原始信息 updated",
+        ai_status=ai_status,
+        ai_record_id=ai_record_id,
+        ai_warnings=ai_warnings,
+        ai_extracted=ai_extracted,
     )
 
 
