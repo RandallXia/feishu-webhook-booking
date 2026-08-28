@@ -6,6 +6,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
+from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai_extractor import AiExtractor, AiExtractorError, ExtractionResult
@@ -94,6 +96,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Feishu Webhook Service", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("feishu_webhook_service")
+
+
+@app.get("/admin/ai")
+async def admin_ai_page() -> HTMLResponse:
+    html_path = Path(__file__).parent / "static" / "admin.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 @app.get("/health")

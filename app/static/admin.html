@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 配置管理 / AI Config Admin</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.5; padding: 24px; }
+.container { max-width: 960px; margin: 0 auto; }
+h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 4px; }
+.subtitle { font-size: 0.85rem; color: #86868b; margin-bottom: 24px; }
+.card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e8e8ed; }
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 4px; color: #515154; }
+.form-group .hint { font-size: 0.75rem; color: #86868b; margin-bottom: 4px; }
+.form-group input[type="text"], .form-group textarea { width: 100%; padding: 8px 12px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 0.875rem; font-family: inherit; }
+.form-group textarea { min-height: 80px; resize: vertical; }
+.form-group input[type="text"]:focus, .form-group textarea:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: none; border-radius: 8px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0066cc; }
+.btn-primary:disabled { background: #a0a0a5; cursor: not-allowed; }
+.btn-secondary { background: #e8e8ed; color: #1d1d1f; }
+.btn-secondary:hover { background: #d2d2d7; }
+.status-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 500; }
+.status-ok { background: #e8f5e9; color: #2e7d32; }
+.status-err { background: #fce4ec; color: #c62828; }
+.status-warn { background: #fff3e0; color: #e65100; }
+.status-info { background: #e3f2fd; color: #1565c0; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table th, table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e8e8ed; }
+table th { font-weight: 600; color: #515154; font-size: 0.8rem; }
+table td { font-size: 0.8rem; word-break: break-all; }
+.key-value { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 0.85rem; }
+.key-value dt { color: #515154; font-weight: 500; }
+.key-value dd { color: #1d1d1f; }
+.error-box { background: #fce4ec; border: 1px solid #f8bbd0; border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.85rem; color: #c62828; }
+.warning-box { background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.85rem; }
+.warning-box .warning-item { color: #e65100; padding: 2px 0; }
+.placeholder { color: #86868b; font-style: italic; font-size: 0.85rem; }
+#result-panel { font-size: 0.85rem; }
+#result-panel pre { background: #f5f5f7; border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 0.8rem; }
+.disabled-notice { text-align: center; padding: 32px 16px; color: #86868b; }
+.disabled-notice .icon { font-size: 2rem; margin-bottom: 8px; }
+@media (max-width: 640px) { .key-value { grid-template-columns: 100px 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>AI 配置管理</h1>
+  <p class="subtitle">AI Config Admin — 只读浏览 / Read-only viewer</p>
+
+  <!-- Token card -->
+  <div class="card">
+    <div class="card-title">管理令牌 / Admin Token</div>
+    <div class="form-group">
+      <label for="token-input">X-Admin-Token</label>
+      <div class="hint">令牌仅存于本机浏览器 localStorage，不会发送到页面以外的位置 / Stored in browser localStorage only</div>
+      <input type="text" id="token-input" placeholder="X-Admin-Token" />
+    </div>
+  </div>
+
+  <!-- Profile card -->
+  <div class="card">
+    <div class="card-title">配置概览 / Profile Overview</div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="load-profile-btn">加载配置 / Load Profile</button>
+    </div>
+    <div id="profile-panel">
+      <p class="placeholder">点击"加载配置"查看当前 AI 配置 / Click "Load Profile" to view AI config</p>
+    </div>
+  </div>
+
+  <!-- Test card -->
+  <div class="card">
+    <div class="card-title">提示词测试 / Prompt Tester</div>
+    <div class="form-group">
+      <label for="test-text">样本 OCR 文本 / Sample OCR Text</label>
+      <textarea id="test-text" placeholder="输入 OCR 文本进行提取测试 / Enter OCR text for extraction test">麦当劳 ¥42 微信支付 2026-08-28</textarea>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="test-prompt-btn">测试提取 / Test Prompt</button>
+    </div>
+    <div id="result-panel">
+      <p class="placeholder">测试结果将显示在这里 / Test results will appear here</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const TOKEN_KEY = 'admin_ai_token';
+  const API_BASE = '';
+
+  // --- DOM refs ---
+  const tokenInput = document.getElementById('token-input');
+  const loadProfileBtn = document.getElementById('load-profile-btn');
+  const profilePanel = document.getElementById('profile-panel');
+  const testText = document.getElementById('test-text');
+  const testPromptBtn = document.getElementById('test-prompt-btn');
+  const resultPanel = document.getElementById('result-panel');
+
+  // --- Token persistence ---
+  function loadToken() {
+    const saved = localStorage.getItem(TOKEN_KEY);
+    if (saved) tokenInput.value = saved;
+  }
+  function saveToken() {
+    localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+  }
+  tokenInput.addEventListener('change', saveToken);
+
+  // --- Helpers ---
+  function getToken() {
+    return tokenInput.value.trim();
+  }
+
+  function authHeaders() {
+    const t = getToken();
+    return t ? { 'X-Admin-Token': t } : {};
+  }
+
+  function handle401(response) {
+    if (response.status === 401) {
+      alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
+      tokenInput.focus();
+      return true;
+    }
+    return false;
+  }
+
+  // --- Profile rendering ---
+  function renderProfile(data) {
+    // AI disabled branch
+    if (data.error && data.error.code === 'AI_DISABLED') {
+      profilePanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>AI 未启用 / AI Not Enabled</p><p style="font-size:0.8rem;margin-top:4px;">当前 AI_ENABLED=false，AI 功能未激活<br/>AI_ENABLED=false, AI features are inactive</p></div>';
+      return;
+    }
+
+    // Fail-closed branch: registry config_valid=false
+    const registry = data.registry || {};
+    const configValid = registry.config_valid !== false; // default true if missing
+
+    if (!configValid) {
+      const errMsg = registry.last_reload_error || '未知错误 / Unknown error';
+      profilePanel.innerHTML =
+        '<div class="status-tag status-err">配置无效 / Config Invalid</div>' +
+        '<div class="error-box">' +
+          '<strong>最后加载错误 / Last reload error:</strong><br/>' +
+          '<span style="font-family:monospace;font-size:0.8rem;">' + escapeHtml(errMsg) + '</span>' +
+        '</div>';
+      return;
+    }
+
+    // Healthy profile
+    let html = '<div class="key-value">';
+    html += '<dt>AI 状态 / Status</dt><dd><span class="status-tag status-ok">已启用 / Enabled</span></dd>';
+    html += '<dt>提供商 / Provider</dt><dd>' + escapeHtml(data.provider || '-') + '</dd>';
+    html += '<dt>模型 / Model</dt><dd>' + escapeHtml(data.model || '-') + '</dd>';
+    html += '<dt>超时 / Timeout</dt><dd>' + escapeHtml(String(data.timeout_seconds ?? '-')) + 's</dd>';
+    html += '</div>';
+
+    // Registry info
+    if (registry.generation !== undefined) {
+      html += '<div class="key-value" style="margin-top:8px;">';
+      html += '<dt>配置版本 / Gen</dt><dd>' + escapeHtml(String(registry.generation)) + '</dd>';
+      html += '<dt>配置有效 / Valid</dt><dd><span class="status-tag ' + (configValid ? 'status-ok' : 'status-err') + '">' + (configValid ? '是 / Yes' : '否 / No') + '</span></dd>';
+      if (registry.last_reload_error) {
+        html += '<dt>最后错误 / Error</dt><dd><span class="status-tag status-err">' + escapeHtml(registry.last_reload_error) + '</span></dd>';
+      }
+      html += '</div>';
+    }
+
+    // Fields table
+    const profile = data.profile;
+    if (profile && profile.fields && profile.fields.length > 0) {
+      html += '<div style="margin-top:12px;">';
+      html += '<div style="font-size:0.85rem;font-weight:500;margin-bottom:6px;">字段映射 / Field Mapping</div>';
+      html += '<table><thead><tr><th>AI 键 / AI Key</th><th>飞书字段 / Feishu Field</th><th>类型 / Type</th><th>回退 / Fallback</th><th>提示词 / Prompt</th></tr></thead><tbody>';
+      for (const f of profile.fields) {
+        html += '<tr>';
+        html += '<td>' + escapeHtml(f.ai_key) + '</td>';
+        html += '<td>' + escapeHtml(f.feishu_field) + '</td>';
+        html += '<td>' + escapeHtml(f.type) + '</td>';
+        html += '<td>' + escapeHtml(f.fallback || '-') + '</td>';
+        html += '<td style="max-width:200px;">' + escapeHtml((f.prompt || '').substring(0, 60)) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    // Whitelist counts
+    const whitelists = data.whitelists;
+    if (whitelists) {
+      const keys = Object.keys(whitelists);
+      html += '<div class="key-value" style="margin-top:8px;">';
+      html += '<dt>选项白名单 / Whitelist</dt><dd>' + escapeHtml(String(keys.length)) + ' 个字段 / fields';
+      if (keys.length > 0) {
+        html += '<div style="font-size:0.75rem;color:#86868b;margin-top:2px;">' +
+          keys.map(k => k + ' (' + whitelists[k].length + ' 选项/options)').join(', ') +
+        '</div>';
+      }
+      html += '</dd></div>';
+    }
+
+    profilePanel.innerHTML = html;
+  }
+
+  function renderTestResult(data) {
+    if (data.error && data.error.code === 'AI_DISABLED') {
+      resultPanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>AI 未启用，无法测试 / AI Not Enabled, cannot test</p></div>';
+      return;
+    }
+
+    let html = '';
+
+    // AI status
+    const status = data.ai_status || 'unknown';
+    const statusClass = status === 'succeeded' ? 'status-ok' : (status === 'failed' ? 'status-err' : 'status-warn');
+    html += '<div style="margin-bottom:8px;">';
+    html += '<strong>提取状态 / Status:</strong> <span class="status-tag ' + statusClass + '">' + escapeHtml(status) + '</span>';
+    html += '</div>';
+
+    if (status === 'failed') {
+      html += '<div class="error-box">' + escapeHtml(data.error || 'Unknown error') + '</div>';
+      resultPanel.innerHTML = html;
+      return;
+    }
+
+    // Warnings (highlighted)
+    if (data.warnings && data.warnings.length > 0) {
+      html += '<div class="warning-box"><strong>警告 / Warnings:</strong>';
+      for (const w of data.warnings) {
+        html += '<div class="warning-item">⚠ ' + escapeHtml(w) + '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Extracted fields
+    if (data.extracted) {
+      html += '<div style="margin-top:8px;"><strong>提取字段 / Extracted Fields:</strong></div>';
+      html += '<div class="key-value" style="margin-top:4px;">';
+      for (const [key, val] of Object.entries(data.extracted)) {
+        html += '<dt>' + escapeHtml(key) + '</dt><dd>' + escapeHtml(val != null ? String(val) : '-') + '</dd>';
+      }
+      html += '</div>';
+    }
+
+    // Bill fields
+    if (data.bill_fields && Object.keys(data.bill_fields).length > 0) {
+      html += '<div style="margin-top:8px;"><strong>账单字段 / Bill Fields:</strong></div>';
+      html += '<div class="key-value" style="margin-top:4px;">';
+      for (const [key, val] of Object.entries(data.bill_fields)) {
+        html += '<dt>' + escapeHtml(key) + '</dt><dd>' + escapeHtml(val != null ? String(val) : '-') + '</dd>';
+      }
+      html += '</div>';
+    }
+
+    // Summary writeback
+    if (data.summary_writeback) {
+      html += '<div style="margin-top:8px;"><strong>摘要回写 / Summary Writeback:</strong></div>';
+      html += '<div class="key-value" style="margin-top:4px;">';
+      html += '<dt>字段 / Field</dt><dd>' + escapeHtml(data.summary_writeback.field || '-') + '</dd>';
+      html += '<dt>值 / Value</dt><dd>' + escapeHtml(data.summary_writeback.value != null ? String(data.summary_writeback.value) : '-') + '</dd>';
+      html += '</div>';
+    }
+
+    // Raw JSON toggle
+    html += '<div style="margin-top:8px;">';
+    html += '<button class="btn btn-secondary" id="toggle-raw-btn" style="font-size:0.75rem;padding:4px 10px;">显示原始 JSON / Show Raw JSON</button>';
+    html += '</div>';
+    html += '<div id="raw-json" style="display:none;margin-top:6px;"><pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre></div>';
+
+    resultPanel.innerHTML = html;
+
+    // Wire raw toggle
+    document.getElementById('toggle-raw-btn').addEventListener('click', function() {
+      const raw = document.getElementById('raw-json');
+      raw.style.display = raw.style.display === 'none' ? 'block' : 'none';
+    });
+  }
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // --- Load Profile ---
+  loadProfileBtn.addEventListener('click', async function() {
+    const token = getToken();
+    if (!token) {
+      alert('请先输入管理令牌 / Please enter admin token first');
+      tokenInput.focus();
+      return;
+    }
+
+    saveToken();
+    profilePanel.innerHTML = '<p class="placeholder">加载中 / Loading...</p>';
+
+    try {
+      const response = await fetch(API_BASE + '/admin/ai/profile', {
+        headers: authHeaders()
+      });
+      if (handle401(response)) return;
+      if (response.status === 404) {
+        const body = await response.json();
+        if (body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
+          renderProfile({ error: { code: 'AI_DISABLED' } });
+          return;
+        }
+        profilePanel.innerHTML = '<p class="placeholder">端点不可用 / Endpoint unavailable (404)</p>';
+        return;
+      }
+      if (!response.ok) {
+        profilePanel.innerHTML = '<div class="error-box">HTTP ' + response.status + ': ' + response.statusText + '</div>';
+        return;
+      }
+      const data = await response.json();
+      renderProfile(data);
+    } catch (err) {
+      profilePanel.innerHTML = '<div class="error-box">网络错误 / Network error: ' + escapeHtml(err.message) + '</div>';
+    }
+  });
+
+  // --- Test Prompt ---
+  testPromptBtn.addEventListener('click', async function() {
+    const token = getToken();
+    if (!token) {
+      alert('请先输入管理令牌 / Please enter admin token first');
+      tokenInput.focus();
+      return;
+    }
+
+    const text = testText.value.trim();
+    if (!text) {
+      alert('请输入测试文本 / Please enter test text');
+      testText.focus();
+      return;
+    }
+
+    saveToken();
+    resultPanel.innerHTML = '<p class="placeholder">测试中 / Testing...</p>';
+
+    try {
+      const response = await fetch(API_BASE + '/admin/ai/test', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ text: text })
+      });
+      if (handle401(response)) return;
+      if (response.status === 404) {
+        const body = await response.json();
+        if (body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
+          renderTestResult({ error: { code: 'AI_DISABLED' } });
+          return;
+        }
+        resultPanel.innerHTML = '<p class="placeholder">端点不可用 / Endpoint unavailable (404)</p>';
+        return;
+      }
+      const data = await response.json();
+      renderTestResult(data);
+    } catch (err) {
+      resultPanel.innerHTML = '<div class="error-box">网络错误 / Network error: ' + escapeHtml(err.message) + '</div>';
+    }
+  });
+
+  // --- Init ---
+  loadToken();
+})();
+</script>
+</body>
+</html>
