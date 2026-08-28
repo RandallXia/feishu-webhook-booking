@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from httpx import ASGITransport
@@ -45,6 +45,39 @@ def _mock_pipeline(result: PipelineResult) -> AsyncMock:
     pipeline = AsyncMock()
     pipeline.run = AsyncMock(return_value=result)
     return pipeline
+
+
+def _mock_registry() -> AsyncMock:
+    """Mock AiProfileRegistry: maybe_reload is a no-op, get_snapshot returns a stub.
+
+    The pipeline mock ignores its profile/option_whitelists args (returns a fixed
+    PipelineResult), so the snapshot's contents are irrelevant here — only the
+    shape (`.profile`, `.option_whitelists`) needs to satisfy the route's unpack.
+    """
+    from app.ai_profile import AiProfile
+    from app.field_codec import FieldSpec
+
+    registry = AsyncMock()
+    registry.maybe_reload = AsyncMock(return_value=None)
+    stub_profile = AiProfile(
+        prompt_header="stub",
+        summary_field="精简原始数据",
+        bill_app_token="bascn-stub",
+        bill_table_id="tbl-stub",
+        fields=(
+            FieldSpec(
+                ai_key="summary",
+                feishu_field="精简原始数据",
+                type="text",
+                target="extract",
+            ),
+        ),
+    )
+    snapshot = MagicMock()
+    snapshot.profile = stub_profile
+    snapshot.option_whitelists = {}
+    registry.get_snapshot = MagicMock(return_value=snapshot)
+    return registry
 
 
 def _enabled_settings():
@@ -118,6 +151,7 @@ async def test_enabled_succeeded_response_has_ai_fields():
         app.state.settings = _enabled_settings()
         pipeline_mock = _mock_pipeline(result)
         app.state.ai_pipeline = pipeline_mock
+        app.state.ai_registry = _mock_registry()
 
         async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
             response = await client.post(
@@ -160,6 +194,7 @@ async def test_enabled_ai_failure_returns_200():
         app.state.feishu_client = _mock_feishu_client(record_id="rec-original-007")
         app.state.settings = _enabled_settings()
         app.state.ai_pipeline = _mock_pipeline(result)
+        app.state.ai_registry = _mock_registry()
 
         async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
             response = await client.post(

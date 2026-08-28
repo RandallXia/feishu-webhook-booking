@@ -9,7 +9,12 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai_extractor import AiExtractor
-from .ai_profile import AiProfile, parse_profile
+from .ai_profile import (
+    AiProfile,
+    AiProfileRegistry,
+    AiProfileRegistryUnavailableError,
+    ProfileConfigError,
+)
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
 from .pipeline import AiPipeline, PipelineResult
@@ -67,17 +72,20 @@ async def lifespan(app: FastAPI):
     app.state.feishu_client = FeishuClient(settings)
     app.state.target_registry = target_registry
 
-    # AI stage is constructed only when AI_ENABLED=true; parse_profile failures
-    # fail startup (aligns with target_registry.load_initial fail-fast above).
+    # AI stage is constructed only when AI_ENABLED=true; registry load_initial
+    # failures fail startup (aligns with target_registry.load_initial fail-fast).
+    # The registry replaces the old static parse_profile — snapshots are
+    # hot-reloaded per-request via maybe_reload + mtime check.
     if settings.ai_enabled:
-        profile = parse_profile(settings.ai_profile_file)
+        ai_registry = AiProfileRegistry(settings, app.state.feishu_client)
+        await ai_registry.load_initial()
+        app.state.ai_registry = ai_registry
         extractor = AiExtractor(settings)
         app.state.ai_extractor = extractor
-        app.state.ai_profile = profile
         app.state.ai_pipeline = AiPipeline(settings, extractor, app.state.feishu_client)
     else:
         app.state.ai_extractor = None
-        app.state.ai_profile = None
+        app.state.ai_registry = None
         app.state.ai_pipeline = None
 
     yield
@@ -246,19 +254,38 @@ async def ingest_ocr(
     )
 
     # AI stage runs only after the original-text write succeeded. The pipeline
-    # never raises (AiPipeline.run catches Exception), so this block cannot
-    # introduce a new 5xx path; an AI failure still returns 200.
+    # never raises (AiPipeline.run catches Exception), so an AI failure still
+    # returns 200. The ONE exception is AiProfileRegistryUnavailableError — the
+    # registry is fail-closed (bad TOML / list_fields failure → config_valid=False),
+    # and serving would risk polluting single_select options, so it 503s.
     ai_status: str | None = None
     ai_record_id: str | None = None
     ai_warnings: list[str] | None = None
     ai_extracted: dict | None = None
     ai_pipeline: AiPipeline | None = getattr(request.app.state, "ai_pipeline", None)
-    if settings.ai_enabled and ai_pipeline is not None:
-        profile: AiProfile = request.app.state.ai_profile
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if settings.ai_enabled and ai_pipeline is not None and ai_registry is not None:
+        try:
+            await ai_registry.maybe_reload()
+            snapshot = ai_registry.get_snapshot()
+        except AiProfileRegistryUnavailableError as exc:
+            logger.exception("ai profile registry unavailable request_id=%s", request_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "AI_PROFILE_UNAVAILABLE",
+                        "message": str(exc),
+                    },
+                },
+            ) from exc
         result: PipelineResult = await ai_pipeline.run(
             original_text=original_text,
             target=target,
-            profile=profile,
+            profile=snapshot.profile,
+            option_whitelists=snapshot.option_whitelists,
         )
         ai_status = result.ai_status
         ai_record_id = result.bill_record_id
@@ -338,8 +365,25 @@ async def reload_config(
             },
         ) from exc
 
-    return {
+    response: dict[str, object] = {
         "success": True,
         "request_id": request_id,
         **status_payload,
     }
+
+    # AI registry reload — best-effort, mirrors the target registry pattern.
+    # _load_snapshot re-raises ProfileConfigError/FeishuClientError AFTER
+    # setting config_valid=False, so get_status() returns fail-closed
+    # diagnostics without raising. AI_ENABLED=false → ai_registry is None
+    # and we just emit ai_profile: null (backward-compatible key presence).
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if ai_registry is not None:
+        try:
+            await ai_registry.reload(force=True)
+        except (AiProfileRegistryUnavailableError, ProfileConfigError, FeishuClientError):
+            pass  # config_valid already False — diagnostics via get_status()
+        response["ai_profile"] = ai_registry.get_status()
+    else:
+        response["ai_profile"] = None
+
+    return response

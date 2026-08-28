@@ -1,0 +1,77 @@
+# AI 提取管线配置 / AI extraction pipeline configuration
+# 宿主机编辑，:ro 挂载，mtime 热重载（与 feishu-targets.toml 同模式）
+# Edit on host, mount :ro, mtime-based hot reload (same as feishu-targets.toml)
+#
+# 注：prompt_header 必须放在所有 [section] 之前 —— TOML 规则：段落后的裸键
+# 会归入该段，而不是顶层。
+# Note: prompt_header MUST appear BEFORE any [section] header — TOML rule: a
+# bare key after a section header attaches to that section, not the top level.
+
+prompt_header = "你是一个账单信息提取助手。从用户提供的 OCR 文本中提取账单字段。"
+
+[extract]
+summary_field = "精简原始数据"
+
+[bill]
+app_token = "bascnXXXXXXXXXXXXXXXX"
+table_id = "tblXXXXXXXXXXXXXXXX"
+
+[[fields]]
+ai_key = "summary"
+feishu_field = "精简原始数据"
+type = "text"
+target = "extract"
+prompt = "提炼这段 OCR 账单文本的精简摘要，保留商户、金额、时间、支付方式等关键信息"
+
+[[fields]]
+ai_key = "description"
+feishu_field = "消费描述"
+type = "text"
+target = "bill"
+prompt = "一句话描述这笔消费，不超过15字"
+
+[[fields]]
+ai_key = "flow_type"
+feishu_field = "收支类型"
+type = "single_select"
+fallback = "支出"
+target = "bill"
+prompt = "这笔账单是支出还是收入"
+
+[[fields]]
+ai_key = "amount"
+feishu_field = "金额"
+type = "number"
+target = "bill"
+prompt = "账单金额，纯数字，单位元"
+
+[[fields]]
+ai_key = "category"
+feishu_field = "收支分类"
+type = "single_select"
+fallback = "其他"
+target = "bill"
+prompt = "账单分类，如：餐饮/交通/购物/日用/娱乐/医疗/其他"
+
+[[fields]]
+ai_key = "payment_method"
+feishu_field = "支付途径"
+type = "single_select"
+fallback = "未知"
+target = "bill"
+prompt = "支付方式，如：微信/支付宝/银行卡/现金/信用卡"
+
+[[fields]]
+ai_key = "bill_date"
+feishu_field = "账单日期"
+type = "date"
+target = "bill"
+prompt = "账单发生日期，格式 YYYY-MM-DD；如无法判断则给出今天日期"
+
+[[fields]]
+ai_key = "raw_source"
+feishu_field = "原始采集账单数据"
+type = "passthrough"
+target = "bill"
+source = "summary"
+prompt = ""
