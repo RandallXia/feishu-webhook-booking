@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .ai_extractor import AiExtractor
+from .ai_extractor import AiExtractor, AiExtractorError, ExtractionResult
 from .ai_profile import (
     AiProfile,
     AiProfileRegistry,
@@ -17,6 +17,7 @@ from .ai_profile import (
 )
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
+from .field_codec import FieldSpec, encode_fields
 from .pipeline import AiPipeline, PipelineResult
 from .target_registry import TargetRegistry, TargetRegistryError, TargetRegistryUnavailableError, TargetSelectorError
 
@@ -387,3 +388,188 @@ async def reload_config(
         response["ai_profile"] = None
 
     return response
+
+
+class AiTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(..., min_length=1, max_length=32768)
+
+
+def _admin_auth_error(code: str, message: str, request_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=(
+            status.HTTP_404_NOT_FOUND
+            if code == "RELOAD_DISABLED"
+            else status.HTTP_401_UNAUTHORIZED
+        ),
+        detail={
+            "success": False,
+            "request_id": request_id,
+            "error": {"code": code, "message": message},
+        },
+    )
+
+
+@app.post(
+    "/admin/ai/test",
+    responses={
+        401: {"model": WebhookErrorResponse},
+        404: {"model": WebhookErrorResponse},
+        503: {"model": WebhookErrorResponse},
+    },
+)
+async def ai_test_dry_run(
+    payload: AiTestRequest,
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+
+    if not settings.config_reload_token:
+        raise _admin_auth_error("RELOAD_DISABLED", "config reload endpoint is disabled", request_id)
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, settings.config_reload_token):
+        raise _admin_auth_error("UNAUTHORIZED", "invalid admin token", request_id)
+
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if not settings.ai_enabled or ai_registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_DISABLED", "message": "AI stage is disabled"},
+            },
+        )
+
+    # Dry run: registry reload (mirrors ingest_ocr). Fail-closed registry → 503
+    # (a bad profile cannot guarantee safe single_select encoding).
+    try:
+        await ai_registry.maybe_reload()
+        snapshot = ai_registry.get_snapshot()
+    except AiProfileRegistryUnavailableError as exc:
+        logger.exception("ai profile registry unavailable request_id=%s", request_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_PROFILE_UNAVAILABLE", "message": str(exc)},
+            },
+        ) from exc
+
+    extractor: AiExtractor | None = getattr(request.app.state, "ai_extractor", None)
+    field_prompts = {
+        spec.ai_key: spec.prompt for spec in snapshot.profile.fields if spec.type != "passthrough"
+    }
+
+    try:
+        extraction: ExtractionResult = await extractor.extract(
+            payload.text, snapshot.profile.prompt_header, field_prompts
+        )
+    except AiExtractorError as exc:
+        # Dry-run never 5xx for AI failures — the point is to surface the failure
+        # body for prompt iteration without risking webhook semantics.
+        logger.warning(
+            "ai dry-run extract failed request_id=%s stage=%s", request_id, exc.stage
+        )
+        return {"ai_status": "failed", "error": str(exc)}
+
+    extract_fields, bill_fields, warnings = encode_fields(
+        extraction, list(snapshot.profile.fields), snapshot.option_whitelists
+    )
+
+    return {
+        "ai_status": "succeeded",
+        "extracted": {
+            "summary": extraction.summary,
+            "description": extraction.description,
+            "flow_type": extraction.flow_type,
+            "amount": extraction.amount,
+            "category": extraction.category,
+            "payment_method": extraction.payment_method,
+            "bill_date": extraction.bill_date,
+        },
+        "bill_fields": bill_fields,
+        "summary_writeback": {
+            "field": snapshot.profile.summary_field,
+            "value": extract_fields.get(snapshot.profile.summary_field),
+        },
+        "warnings": warnings,
+    }
+
+
+@app.get(
+    "/admin/ai/profile",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}},
+)
+async def ai_profile_inspect(
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+
+    if not settings.config_reload_token:
+        raise _admin_auth_error("RELOAD_DISABLED", "config reload endpoint is disabled", request_id)
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, settings.config_reload_token):
+        raise _admin_auth_error("UNAUTHORIZED", "invalid admin token", request_id)
+
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if not settings.ai_enabled or ai_registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_DISABLED", "message": "AI stage is disabled"},
+            },
+        )
+
+    base: dict[str, object] = {
+        "ai_enabled": True,
+        "provider": settings.ai_provider,
+        "model": settings.ai_model,
+        "timeout_seconds": settings.ai_timeout_seconds,
+        "dedup_ttl_seconds": settings.ai_dedup_ttl_seconds,
+        "registry": ai_registry.get_status(),
+    }
+
+    # Fail-closed branch: get_snapshot raises. The route stays 200 (NEITHER 500
+    # NOR 503) so admin tooling can render degraded diagnostics. The base body
+    # already carries registry.config_valid=false + last_reload_error.
+    try:
+        snapshot = ai_registry.get_snapshot()
+    except AiProfileRegistryUnavailableError:
+        base["profile"] = None
+        base["whitelists"] = None
+        return base
+
+    base["profile"] = {
+        "summary_field": snapshot.profile.summary_field,
+        "bill": {
+            "app_token": snapshot.profile.bill_app_token,
+            "table_id": snapshot.profile.bill_table_id,
+        },
+        "fields": [_field_spec_to_dict(spec) for spec in snapshot.profile.fields],
+    }
+    base["whitelists"] = {
+        field: sorted(options)
+        for field, options in snapshot.option_whitelists.items()
+    }
+    return base
+
+
+def _field_spec_to_dict(spec: FieldSpec) -> dict[str, object]:
+    return {
+        "ai_key": spec.ai_key,
+        "feishu_field": spec.feishu_field,
+        "type": spec.type,
+        "target": spec.target,
+        "fallback": spec.fallback,
+        "prompt": spec.prompt,
+        "source": spec.source,
+    }
