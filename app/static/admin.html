@@ -35,10 +35,11 @@
     </div>
   </div>
 
-  <!-- AI connection section (todo 10 placeholder) -->
+  <!-- AI connection section (todo 11) -->
   <div class="card" id="ai-connection-section">
     <div class="card-title">AI 连接 / AI Connection</div>
-    <p class="section-placeholder">待实现 / Pending (todo 10)</p>
+    <div id="restart-banner" class="bar-warn" style="display:none;"></div>
+    <p class="section-placeholder">待实现 / Pending (todo 11)</p>
   </div>
 
   <!-- Extract-table config section (todo 9) -->
@@ -54,10 +55,50 @@
     </div>
   </div>
 
-  <!-- Bill-table config section (todo 11 placeholder) -->
+  <!-- Bill-table config section (todo 10) -->
   <div class="card" id="bill-section">
     <div class="card-title">账单表配置 / Bill Table Config</div>
-    <p class="section-placeholder">待实现 / Pending (todo 11)</p>
+    <div id="bill-banner"></div>
+
+    <div class="form-group">
+      <label for="prompt-header">全局提示词 / Prompt Header</label>
+      <div class="hint">位于所有字段提示词之前 / Prepended to every field prompt</div>
+      <textarea id="prompt-header" placeholder="你是一个账单提取助手 / You are a bill extraction assistant"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>飞书账单表 URL / Bill Table URL</label>
+      <input type="text" id="bill-url-input" class="url-input" placeholder="https://xxx.feishu.cn/base/{app_token}?table={table_id}" />
+      <button class="btn btn-secondary" id="bill-parse-btn" type="button" style="margin-top:4px;">解析 URL / Parse</button>
+      <div class="parse-status"></div>
+    </div>
+
+    <div class="form-group">
+      <label>app_token</label>
+      <input type="text" id="bill-app-token-input" readonly="readonly" />
+    </div>
+
+    <div class="form-group">
+      <label>表 / Table</label>
+      <select id="bill-table-select"></select>
+      <button class="btn btn-secondary" id="bill-load-tables-btn" type="button" style="margin-top:4px;">加载表列表 / Load Tables</button>
+      <div class="table-status"></div>
+    </div>
+
+    <div class="form-group">
+      <label>table_id</label>
+      <input type="text" id="bill-table-id-input" readonly="readonly" />
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-secondary" id="bill-derive-btn" type="button">自动推导 / Auto-Derive</button>
+    </div>
+
+    <div id="bill-fields-list"></div>
+
+    <div style="margin-top: 12px;">
+      <button class="btn btn-primary" id="save-profile-btn">保存配置 / Save Profile</button>
+    </div>
   </div>
 
   <!-- Test card (existing dry-run — migrated verbatim) -->

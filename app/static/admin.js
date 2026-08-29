@@ -853,8 +853,517 @@
     targetsList.appendChild(renderAliasCard(emptyTarget, extractDefaultAlias, true));
   });
 
+  // ===========================================================================
+  // Bill-table config UI (todo 10 — §bill-section)
+  //
+  // Data flow: GET /admin/config/profile → render 8-row mapping + prompt_header
+  // → user edits → PUT /admin/config/profile. Mirrors the extract-section
+  // patterns (parseUrl / loadTables / showBanner / api) but operates on a
+  // single bill-section scope (no per-card loop). All dynamic text is assigned
+  // via textContent; innerHTML is never used for server data.
+  // ===========================================================================
+
+  // Fixed row order of the 8 AI keys (summary is the extract passthrough; the
+  // other 7 are bill-target extraction keys; raw_source is a passthrough that
+  // writes summary to the bill table without an AI call). Length MUST stay 8.
+  var AI_KEYS = [
+    'summary', 'description', 'flow_type', 'amount',
+    'category', 'payment_method', 'bill_date', 'raw_source',
+  ];
+
+  var billSection = document.getElementById('bill-section');
+  var billBanner = document.getElementById('bill-banner');
+  var billPromptHeader = document.getElementById('prompt-header');
+  var billUrlInput = document.getElementById('bill-url-input');
+  var billAppTokenInput = document.getElementById('bill-app-token-input');
+  var billTableSelect = document.getElementById('bill-table-select');
+  var billTableIdInput = document.getElementById('bill-table-id-input');
+  var billFieldsList = document.getElementById('bill-fields-list');
+  var saveProfileBtn = document.getElementById('save-profile-btn');
+  var billParseBtn = document.getElementById('bill-parse-btn');
+  var billLoadTablesBtn = document.getElementById('bill-load-tables-btn');
+  var billDeriveBtn = document.getElementById('bill-derive-btn');
+  var billBaseGeneration = 0;
+  var billCachedFields = [];
+
+  function billParseUrl() {
+    var url = billUrlInput.value.trim();
+    if (!url) {
+      showError(billSection.querySelector('.parse-status'),
+        '请输入 URL / Please enter a URL');
+      return;
+    }
+    var status = billSection.querySelector('.parse-status');
+    while (status.firstChild) status.removeChild(status.firstChild);
+    status.appendChild(el('span', { className: 'placeholder' }, '解析中 / Parsing...'));
+    api('/admin/feishu/parse-url', {
+      method: 'POST',
+      body: JSON.stringify({ url: url }),
+    }).then(function(parsed) {
+      billAppTokenInput.value = parsed.app_token || '';
+      billTableIdInput.value = parsed.table_id || '';
+      while (status.firstChild) status.removeChild(status.firstChild);
+      status.appendChild(el('span', { className: 'status-tag status-ok' },
+        '✓ ' + (parsed.app_token || '')));
+      billLoadTablesFromAppToken();
+    }).catch(function(err) {
+      while (status.firstChild) status.removeChild(status.firstChild);
+      var msg = '解析失败 / Parse failed';
+      if (err && err.status === 422 && err.body && err.body.detail && err.body.detail.error) {
+        msg = err.body.detail.error.message || msg;
+      } else if (err && err.message) {
+        msg = err.message;
+      }
+      status.appendChild(el('span', { className: 'status-tag status-err' }, msg));
+    });
+  }
+
+  function billLoadTablesFromAppToken() {
+    var appToken = billAppTokenInput.value.trim();
+    if (!appToken) {
+      showError(billSection.querySelector('.table-status'),
+        '请先解析或填写 app_token / Parse or enter app_token first');
+      return;
+    }
+    while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
+    billTableSelect.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
+      while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
+      billTableSelect.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
+      var tables = data.tables || [];
+      for (var i = 0; i < tables.length; i++) {
+        var t = tables[i];
+        billTableSelect.appendChild(el('option', { value: t.table_id }, t.name || t.table_id));
+      }
+      var currentTbl = billTableIdInput.value.trim();
+      if (currentTbl) {
+        for (var j = 0; j < billTableSelect.options.length; j++) {
+          if (billTableSelect.options[j].value === currentTbl) {
+            billTableSelect.selectedIndex = j;
+            break;
+          }
+        }
+      }
+    }).catch(function(err) {
+      while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
+      billTableSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
+      showError(billSection.querySelector('.table-status'), err.message || '加载表列表失败');
+    });
+  }
+
+  // GET /admin/feishu/fields → cache + return [{name, type, options, is_primary}].
+  // Used by both the table-select change handler (refresh the cache) and the
+  // auto-derive button (consume the cache).
+  function billLoadFields(appToken, tableId) {
+    return api('/admin/feishu/fields?app_token=' + encodeURIComponent(appToken) +
+      '&table_id=' + encodeURIComponent(tableId)).then(function(data) {
+      billCachedFields = data.fields || [];
+      return billCachedFields;
+    }).catch(function(err) {
+      billCachedFields = [];
+      showError(billSection.querySelector('.table-status'), err.message || '加载字段列表失败');
+      return [];
+    });
+  }
+
+  if (billParseBtn) billParseBtn.addEventListener('click', billParseUrl);
+
+  if (billLoadTablesBtn) billLoadTablesBtn.addEventListener('click', function() {
+    billLoadTablesFromAppToken();
+  });
+
+  if (billTableSelect) billTableSelect.addEventListener('change', function() {
+    billTableIdInput.value = billTableSelect.value;
+    var appToken = billAppTokenInput.value.trim();
+    var tableId = billTableSelect.value;
+    if (appToken && tableId) {
+      billLoadFields(appToken, tableId).then(function(fields) {
+        renderBillRows(fields);
+      });
+    }
+  });
+
+  // Pure prefill: inspect each Feishu field's name (substring match) + type,
+  // fill only EMPTY rows. Heuristic is name-driven (Feishu type only matters
+  // for single_select pre-selection of type + fallback). Mirrors the Python
+  // parity locked by test_admin_bill_flow.py.
+  function autoDerive(fields) {
+    var mapping = {};
+    var billDateField = null;
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i] || {};
+      var name = f.name || '';
+      var ftype = f.type;
+      // amount: name contains 金额 — type=number regardless of Feishu type.
+      if (name.indexOf('金额') !== -1 && !mapping.amount) {
+        mapping.amount = { feishu_field: name, type: 'number', fallback: null };
+        continue;
+      }
+      // bill_date: name contains 日期 — 账单日期 wins over a plain 日期.
+      if (name.indexOf('日期') !== -1) {
+        if (!mapping.bill_date) {
+          mapping.bill_date = { feishu_field: name, type: 'date', fallback: null };
+          billDateField = name;
+        } else if (name.indexOf('账单') !== -1 &&
+          (billDateField || '').indexOf('账单') === -1) {
+          mapping.bill_date.feishu_field = name;
+          billDateField = name;
+        }
+        continue;
+      }
+      // category: name contains 分类
+      if (name.indexOf('分类') !== -1 && !mapping.category) {
+        var cType = ftype === 'single_select' ? 'single_select' : 'text';
+        var cFb = (cType === 'single_select' && f.options && f.options.length)
+          ? f.options[0] : null;
+        mapping.category = { feishu_field: name, type: cType, fallback: cFb };
+        continue;
+      }
+      // flow_type: name contains 收支 AND 类型
+      if (name.indexOf('收支') !== -1 && name.indexOf('类型') !== -1 && !mapping.flow_type) {
+        var fType = ftype === 'single_select' ? 'single_select' : 'text';
+        var fFb = (fType === 'single_select' && f.options && f.options.length)
+          ? f.options[0] : null;
+        mapping.flow_type = { feishu_field: name, type: fType, fallback: fFb };
+        continue;
+      }
+      // payment_method: name contains 支付 OR 途径
+      if ((name.indexOf('支付') !== -1 || name.indexOf('途径') !== -1) && !mapping.payment_method) {
+        var pType = ftype === 'single_select' ? 'single_select' : 'text';
+        var pFb = (pType === 'single_select' && f.options && f.options.length)
+          ? f.options[0] : null;
+        mapping.payment_method = { feishu_field: name, type: pType, fallback: pFb };
+        continue;
+      }
+      // description: name contains 描述
+      if (name.indexOf('描述') !== -1 && !mapping.description) {
+        mapping.description = { feishu_field: name, type: 'text', fallback: null };
+        continue;
+      }
+      // summary: name contains 精简 OR 摘要
+      if ((name.indexOf('精简') !== -1 || name.indexOf('摘要') !== -1) && !mapping.summary) {
+        mapping.summary = { feishu_field: name, type: 'passthrough', fallback: null };
+        continue;
+      }
+      // raw_source: name contains 原始采集
+      if (name.indexOf('原始采集') !== -1 && !mapping.raw_source) {
+        mapping.raw_source = { feishu_field: name, type: 'passthrough', fallback: null };
+        continue;
+      }
+    }
+    return mapping;
+  }
+
+  function renderBillRows(fields) {
+    while (billFieldsList.firstChild) billFieldsList.removeChild(billFieldsList.firstChild);
+    var derived = autoDerive(fields || []);
+    for (var i = 0; i < AI_KEYS.length; i++) {
+      var key = AI_KEYS[i];
+      var existing = billExistingFields[key];
+      var prefilled = derived[key];
+      var spec = existing || prefilled || { feishu_field: '', type: 'text', fallback: null };
+      billFieldsList.appendChild(renderBillRow(key, spec, fields || []));
+    }
+  }
+
+  // billExistingFields holds the last GET response's per-key spec so a
+  // re-render after auto-derive or table-select change preserves the user's
+  // loaded configuration rather than resetting to empty.
+  var billExistingFields = {};
+
+  function renderBillRow(aiKey, spec, fields) {
+    spec = spec || { feishu_field: '', type: 'text', fallback: null };
+    var row = el('div', { className: 'bill-row', 'data-ai-key': aiKey });
+
+    row.appendChild(el('div', { className: 'bill-row-key' }, aiKey));
+
+    var ffGroup = el('div', { className: 'bill-row-field' });
+    ffGroup.appendChild(el('label', null, '飞书字段 / Feishu Field'));
+    var ffSel = el('select', { className: 'feishu-field-select' });
+    ffSel.appendChild(el('option', { value: '' }, '未映射 / Unmapped'));
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      ffSel.appendChild(el('option', { value: f.name }, f.name));
+    }
+    ffSel.value = spec.feishu_field || '';
+    ffGroup.appendChild(ffSel);
+    row.appendChild(ffGroup);
+
+    var typeGroup = el('div', { className: 'bill-row-type' });
+    typeGroup.appendChild(el('label', null, '类型 / Type'));
+    var typeSel = el('select', { className: 'type-select' });
+    var typeOpts = ['text', 'number', 'single_select', 'date', 'passthrough'];
+    for (var t = 0; t < typeOpts.length; t++) {
+      typeSel.appendChild(el('option', { value: typeOpts[t] }, typeOpts[t]));
+    }
+    typeSel.value = spec.type || 'text';
+    typeGroup.appendChild(typeSel);
+    row.appendChild(typeGroup);
+
+    var fbGroup = el('div', { className: 'bill-row-fallback' });
+    fbGroup.appendChild(el('label', null, '回退 / Fallback'));
+    var fbSel = el('select', { className: 'fallback-select' });
+    fbGroup.appendChild(fbSel);
+    row.appendChild(fbGroup);
+
+    var pGroup = el('div', { className: 'bill-row-prompt' });
+    pGroup.appendChild(el('label', null, '提示词 / Prompt'));
+    var pInput = el('textarea', { className: 'prompt-input' });
+    pInput.value = spec.prompt || '';
+    pGroup.appendChild(pInput);
+    row.appendChild(pGroup);
+
+    var targetGroup = el('div', { className: 'bill-row-target' });
+    targetGroup.appendChild(el('label', null, 'target'));
+    var targetText = aiKey === 'summary' ? 'extract (写回提取表)' : 'bill';
+    targetGroup.appendChild(el('span', { className: 'target-tag' }, targetText));
+    row.appendChild(targetGroup);
+
+    var sourceGroup = el('div', { className: 'bill-row-source' });
+    if (aiKey === 'raw_source') {
+      sourceGroup.appendChild(el('label', null, 'source'));
+      sourceGroup.appendChild(el('span', { className: 'source-tag' }, 'summary'));
+    }
+    row.appendChild(sourceGroup);
+
+    function refreshFallback() {
+      while (fbSel.firstChild) fbSel.removeChild(fbSel.firstChild);
+      var selType = typeSel.value;
+      var selField = ffSel.value;
+      if (selType === 'single_select' && selField) {
+        var opts = null;
+        for (var k = 0; k < fields.length; k++) {
+          if (fields[k].name === selField) { opts = fields[k].options; break; }
+        }
+        fbSel.appendChild(el('option', { value: '' }, '— 无 / None —'));
+        if (opts && opts.length) {
+          for (var o = 0; o < opts.length; o++) {
+            fbSel.appendChild(el('option', { value: opts[o] }, opts[o]));
+          }
+        }
+        fbSel.disabled = false;
+      } else {
+        fbSel.appendChild(el('option', { value: '' }, '— 不可用 / N/A —'));
+        fbSel.disabled = true;
+      }
+      fbSel.value = (selType === 'single_select' && spec.fallback) ? spec.fallback : '';
+    }
+    refreshFallback();
+    ffSel.addEventListener('change', refreshFallback);
+    typeSel.addEventListener('change', refreshFallback);
+
+    return row;
+  }
+
+  // Parse a validation error path into a bill-row locator. Returns:
+  //   {summaryField: true}              for path "extract.summary_field"
+  //   {rowIndex: <int>, field: <string>} for path "fields[i].<field>"
+  //   {rowIndex: <int>}                  for path "fields[i]"
+  //   null                               for unrecognized shapes
+  function billParseErrorPath(path) {
+    if (typeof path !== 'string') return null;
+    if (path === 'extract.summary_field') return { summaryField: true };
+    var m = path.match(/^fields\[(\d+)\](?:\.(\w+))?$/);
+    if (!m) return null;
+    var loc = { rowIndex: parseInt(m[1], 10) };
+    if (m[2]) loc.field = m[2];
+    return loc;
+  }
+
+  function billMarkRowError(rowIndex, field) {
+    var rows = billFieldsList.querySelectorAll('.bill-row');
+    if (rowIndex >= rows.length) return;
+    var row = rows[rowIndex];
+    var sel = '.' + field + '-select';
+    var input = row.querySelector(sel) || row.querySelector('.prompt-input');
+    if (input) {
+      input.classList.add('field-error');
+      input.style.borderColor = '#c62828';
+    }
+  }
+
+  function billClearErrors() {
+    var marked = billFieldsList.querySelectorAll('.field-error');
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].classList.remove('field-error');
+      marked[i].style.borderColor = '';
+    }
+  }
+
+  function billGatherBody() {
+    var rows = billFieldsList.querySelectorAll('.bill-row');
+    var fields = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var aiKey = r.getAttribute('data-ai-key');
+      var ffSel = r.querySelector('.feishu-field-select');
+      var typeSel = r.querySelector('.type-select');
+      var fbSel = r.querySelector('.fallback-select');
+      var pInput = r.querySelector('.prompt-input');
+      var target = aiKey === 'summary' ? 'extract' : 'bill';
+      var source = (aiKey === 'summary' || aiKey === 'raw_source') ? 'summary' : null;
+      var fb = (typeSel.value === 'single_select' && fbSel.value) ? fbSel.value : null;
+      fields.push({
+        ai_key: aiKey,
+        feishu_field: ffSel.value || null,
+        type: typeSel.value,
+        target: target,
+        fallback: fb,
+        prompt: pInput.value || null,
+        source: source,
+      });
+    }
+    return {
+      profile: {
+        prompt_header: billPromptHeader ? billPromptHeader.value : '',
+        summary_field: billGetSummaryField(),
+        bill: {
+          app_token: billAppTokenInput ? billAppTokenInput.value.trim() : '',
+          table_id: billTableIdInput ? billTableIdInput.value.trim() : '',
+        },
+        fields: fields,
+      },
+      base_generation: billBaseGeneration,
+    };
+  }
+
+  // The summary row's feishu_field selection IS summary_field. Read it from
+  // the summary row's <select> so the two stay in sync without a hidden input.
+  function billGetSummaryField() {
+    if (!billFieldsList) return '';
+    var summaryRow = billFieldsList.querySelector('.bill-row[data-ai-key="summary"]');
+    if (!summaryRow) return '';
+    var sel = summaryRow.querySelector('.feishu-field-select');
+    return sel ? sel.value : '';
+  }
+
+  function loadBillProfile() {
+    if (!billSection) return;
+    if (billBanner) {
+      while (billBanner.firstChild) billBanner.removeChild(billBanner.firstChild);
+    }
+    api('/admin/config/profile').then(function(data) {
+      // Fail-closed: registry unavailable → show the error, no form.
+      if (data.profile === null || data.config_valid === false) {
+        if (billBanner) {
+          var msg = '配置无效 / Config Invalid';
+          if (data.last_reload_error) msg += ' — ' + data.last_reload_error;
+          showBanner(billBanner, 'err', msg);
+        }
+        return;
+      }
+      billBaseGeneration = data.generation || 0;
+      if (billPromptHeader) billPromptHeader.value = data.prompt_header || '';
+      if (billAppTokenInput) billAppTokenInput.value = (data.bill && data.bill.app_token) || '';
+      if (billTableIdInput) billTableIdInput.value = (data.bill && data.bill.table_id) || '';
+      // Build the per-key existing-field map so a re-render preserves loaded
+      // config rather than resetting.
+      billExistingFields = {};
+      var fields = data.fields || [];
+      for (var i = 0; i < fields.length; i++) {
+        var f = fields[i];
+        if (f && f.ai_key) {
+          billExistingFields[f.ai_key] = {
+            feishu_field: f.feishu_field || '',
+            type: f.type || 'text',
+            fallback: f.fallback || null,
+            prompt: f.prompt || '',
+          };
+        }
+      }
+      // If the bill table is already configured, fetch its fields so the
+      // feishu_field <select>s carry real options.
+      var appToken = (data.bill && data.bill.app_token) || '';
+      var tableId = (data.bill && data.bill.table_id) || '';
+      if (appToken && tableId) {
+        billLoadFields(appToken, tableId).then(function(cachedFields) {
+          renderBillRows(cachedFields);
+        });
+      } else {
+        renderBillRows([]);
+      }
+    }).catch(function(err) {
+      if (err && err.status === 404) {
+        var body = err.body;
+        if (body && body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
+          if (billBanner) showBanner(billBanner, 'info', 'AI 未启用 / AI not enabled');
+          return;
+        }
+        if (billBanner) showBanner(billBanner, 'warn', '管理端点未启用 / Admin endpoints disabled');
+        return;
+      }
+      if (billBanner) {
+        var msg = '加载失败 / Load failed';
+        if (err && err.body && err.body.detail && err.body.detail.error) {
+          msg = err.body.detail.error.message || msg;
+        } else if (err && err.message) msg = err.message;
+        showBanner(billBanner, 'err', msg);
+      }
+    });
+  }
+
+  if (billDeriveBtn) billDeriveBtn.addEventListener('click', function() {
+    var fields = billCachedFields || [];
+    if (!fields.length) {
+      if (billBanner) showBanner(billBanner, 'warn', '请先选择表并加载字段 / Select a table and load fields first');
+      return;
+    }
+    renderBillRows(fields);
+    if (billBanner) showBanner(billBanner, 'info', '已应用自动推导 / Auto-derive applied');
+  });
+
+  if (saveProfileBtn) saveProfileBtn.addEventListener('click', function() {
+    if (!billBanner) return;
+    var body = billGatherBody();
+    billClearErrors();
+    api('/admin/config/profile', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }).then(function(resp) {
+      billBaseGeneration = resp.generation || billBaseGeneration;
+      showBanner(billBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
+      refreshStatus();
+    }).catch(function(err) {
+      var status = err && err.status;
+      var detail = err && err.body && err.body.detail;
+      if (status === 422 && detail && detail.errors) {
+        var errors = detail.errors;
+        for (var i = 0; i < errors.length; i++) {
+          var loc = billParseErrorPath(errors[i].path);
+          if (!loc) continue;
+          if (loc.summaryField) {
+            showBanner(billBanner, 'err', errors[i].message);
+            continue;
+          }
+          if (loc.field) billMarkRowError(loc.rowIndex, loc.field);
+        }
+        if (!billBanner.firstChild) {
+          showBanner(billBanner, 'err', '校验失败，请检查标红字段 / Validation failed — check highlighted fields');
+        }
+        return;
+      }
+      if (status === 409 && detail && detail.error) {
+        var code = detail.error.code;
+        if (code === 'STALE_WRITE') {
+          showBanner(billBanner, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+          loadBillProfile();
+          return;
+        }
+        if (code === 'RUNTIME_READONLY') {
+          showBanner(billBanner, 'err', detail.error.message || code);
+          return;
+        }
+      }
+      var msg = '保存失败 / Save failed';
+      if (detail && detail.error && detail.error.message) msg = detail.error.message;
+      else if (err && err.message) msg = err.message;
+      showBanner(billBanner, 'err', msg);
+    });
+  });
+
   // --- Init ---
   loadToken();
   refreshStatus();
   loadExtractTargets();
+  loadBillProfile();
 })();
