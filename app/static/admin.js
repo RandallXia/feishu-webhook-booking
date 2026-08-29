@@ -793,6 +793,7 @@
 
   if (saveTargetsBtn) saveTargetsBtn.addEventListener('click', function() {
     if (!extractBanner) return;
+    saveTargetsBtn.disabled = true;
     var body = gatherTargetsFromBody();
     clearCardErrors();
 
@@ -801,6 +802,7 @@
       body: JSON.stringify(body),
     }).then(function(resp) {
       extractBaseGeneration = resp.generation || extractBaseGeneration;
+      clearDirty();
       showBanner(extractBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
       refreshStatus();
       loadExtractTargets();
@@ -839,6 +841,10 @@
       if (detail && detail.error && detail.error.message) msg = detail.error.message;
       else if (err && err.message) msg = err.message;
       showBanner(extractBanner, 'err', msg);
+    }).then(function() {
+      saveTargetsBtn.disabled = false;
+    }, function() {
+      saveTargetsBtn.disabled = false;
     });
   });
 
@@ -1314,6 +1320,7 @@
 
   if (saveProfileBtn) saveProfileBtn.addEventListener('click', function() {
     if (!billBanner) return;
+    saveProfileBtn.disabled = true;
     var body = billGatherBody();
     billClearErrors();
     api('/admin/config/profile', {
@@ -1321,6 +1328,7 @@
       body: JSON.stringify(body),
     }).then(function(resp) {
       billBaseGeneration = resp.generation || billBaseGeneration;
+      clearDirty();
       showBanner(billBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
       refreshStatus();
     }).catch(function(err) {
@@ -1358,12 +1366,302 @@
       if (detail && detail.error && detail.error.message) msg = detail.error.message;
       else if (err && err.message) msg = err.message;
       showBanner(billBanner, 'err', msg);
+    }).then(function() {
+      saveProfileBtn.disabled = false;
+    }, function() {
+      saveProfileBtn.disabled = false;
     });
   });
+
+  // ===========================================================================
+  // Dirty-form tracking + AI connection editor + unified save flow
+  // (todo 11 — §ai-connection-section + shared debounce/409 logic)
+  //
+  // The dirty flag is shared across the extract/bill/env forms: any input
+  // event on a tracked form sets it, every save success clears it, and the
+  // dry-run tester prompts the user before running if it is set. The 409
+  // STALE_WRITE + 409 RUNTIME_READONLY paths are uniform across all three
+  // save buttons (yellow banner + auto-reload on STALE_WRITE).
+  // ===========================================================================
+
+  var dirty = false;
+
+  // Mark the form dirty — wired to every input/change event on the extract,
+  // bill, and env forms. The dry-run tester consults this before running.
+  function markDirty() {
+    dirty = true;
+  }
+
+  function isDirty() {
+    return dirty;
+  }
+
+  function clearDirty() {
+    dirty = false;
+  }
+
+  // Universal save wrapper: disables the button (debounce), runs the PUT
+  // promise, re-enables the button in the finally, and on success clears the
+  // dirty flag + calls refreshStatus(). The caller supplies the banner + the
+  // response handler (ok/err) so the per-section error-mapping stays local.
+  // Returns the promise so callers can chain.
+  function unifiedSave(btn, bannerEl, runPut, onOk, onErr) {
+    if (btn) btn.disabled = true;
+    return runPut().then(function(resp) {
+      clearDirty();
+      refreshStatus();
+      if (onOk) onOk(resp);
+    }).catch(function(err) {
+      var status = err && err.status;
+      var detail = err && err.body && err.body.detail;
+      // 409 STALE_WRITE — uniform: yellow banner + auto-reload.
+      if (status === 409 && detail && detail.error && detail.error.code === 'STALE_WRITE') {
+        if (bannerEl) {
+          showBanner(bannerEl, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+        }
+        if (onErr) onErr(err, 'stale');
+        return;
+      }
+      // 409 ENV_FILE_NOT_FOUND / RUNTIME_READONLY — uniform red banner.
+      if (status === 409 && detail && detail.error) {
+        if (bannerEl) {
+          showBanner(bannerEl, 'err', detail.error.message || detail.error.code);
+        }
+        if (onErr) onErr(err, 'readonly');
+        return;
+      }
+      if (onErr) onErr(err, 'other');
+    }).then(function() {
+      if (btn) btn.disabled = false;
+    }, function() {
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  // ─── AI connection editor (§ai-connection-section) ──────────────────────
+
+  var aiSection = document.getElementById('ai-connection-section');
+  var envBanner = document.getElementById('env-banner');
+  var restartBanner = document.getElementById('restart-banner');
+  var aiProviderSelect = document.getElementById('ai-provider-select');
+  var aiBaseUrlInput = document.getElementById('ai-base-url-input');
+  var aiModelInput = document.getElementById('ai-model-input');
+  var aiTimeoutInput = document.getElementById('ai-timeout-input');
+  var aiApiKeyInput = document.getElementById('ai-api-key-input');
+  var aiApiKeyHint = document.getElementById('ai-api-key-hint');
+  var envOtherList = document.getElementById('env-other-list');
+  var saveEnvBtn = document.getElementById('save-env-btn');
+
+  // Render the AI connection form from GET /admin/config/env. The API key is
+  // NEVER echoed into the DOM — only the ai_api_key_set boolean drives the
+  // password box placeholder.
+  function renderAiConnection(data) {
+    var ai = data.ai || {};
+    var other = data.other || {};
+    if (aiProviderSelect) aiProviderSelect.value = ai.ai_provider || '';
+    if (aiBaseUrlInput) aiBaseUrlInput.value = ai.ai_base_url || '';
+    if (aiModelInput) aiModelInput.value = ai.ai_model || '';
+    if (aiTimeoutInput) aiTimeoutInput.value = ai.ai_timeout_seconds != null
+      ? String(ai.ai_timeout_seconds) : '';
+    if (aiApiKeyInput) {
+      aiApiKeyInput.value = '';
+      if (aiApiKeyHint) {
+        while (aiApiKeyHint.firstChild) aiApiKeyHint.removeChild(aiApiKeyHint.firstChild);
+        if (ai.ai_api_key_set) {
+          aiApiKeyHint.appendChild(el('span', null,
+            '已设置——留空保持不变 / Set — leave empty to keep current'));
+        } else {
+          aiApiKeyHint.appendChild(el('span', null,
+            '未设置 / Unset'));
+        }
+      }
+    }
+    if (envOtherList) {
+      while (envOtherList.firstChild) envOtherList.removeChild(envOtherList.firstChild);
+      var kv = el('div', { className: 'key-value' });
+      var feishuAppId = other.feishu_app_id;
+      kv.appendChild(el('dt', null, 'FEISHU_APP_ID'));
+      kv.appendChild(el('dd', null, feishuAppId || '-'));
+      kv.appendChild(el('dt', null, 'FEISHU_APP_SECRET'));
+      kv.appendChild(el('dd', null, other.feishu_app_secret_set ? '已设置 / Set' : '未设置 / Unset'));
+      kv.appendChild(el('dt', null, 'WEBHOOK_SHARED_TOKEN'));
+      kv.appendChild(el('dd', null, other.webhook_shared_token_set ? '已设置 / Set' : '未设置 / Unset'));
+      kv.appendChild(el('dt', null, 'CONFIG_RELOAD_TOKEN'));
+      kv.appendChild(el('dd', null, other.config_reload_token_set ? '已设置 / Set' : '未设置 / Unset'));
+      envOtherList.appendChild(kv);
+    }
+    // env_file is null → env vars set directly, PUT will 409.
+    if (!data.env_file && envBanner) {
+      showBanner(envBanner, 'warn',
+        '无 env 文件——保存将失败（环境变量直设模式）/ No env file — save will 409');
+    }
+  }
+
+  function loadEnv() {
+    if (!aiSection) return;
+    api('/admin/config/env').then(function(data) {
+      renderAiConnection(data);
+    }).catch(function(err) {
+      if (err && err.status === 404) {
+        if (envBanner) showBanner(envBanner, 'warn',
+          '管理端点未启用 / Admin endpoints disabled');
+        return;
+      }
+      if (envBanner) {
+        var msg = '加载失败 / Load failed';
+        if (err && err.body && err.body.detail && err.body.detail.error) {
+          msg = err.body.detail.error.message || msg;
+        } else if (err && err.message) msg = err.message;
+        showBanner(envBanner, 'err', msg);
+      }
+    });
+  }
+
+  // Parse a pydantic 422 detail entry's loc into a control locator. The env
+  // PUT 422 is pydantic extra="forbid" → body.detail is a list of
+  // {type, loc:[body, <field>], msg, ...}. Returns:
+  //   {field: <string>}  when loc[1] is a known env control field
+  //   null                for unrecognized shapes
+  function envParseErrorPath(loc) {
+    if (!Array.isArray(loc) || loc.length < 2) return null;
+    var field = loc[loc.length - 1];
+    if (typeof field !== 'string') return null;
+    var known = {
+      'ai_provider': 'ai-provider-select',
+      'ai_base_url': 'ai-base-url-input',
+      'ai_model': 'ai-model-input',
+      'ai_timeout_seconds': 'ai-timeout-input',
+      'api_key': 'ai-api-key-input',
+      'ai': null,
+    };
+    if (!Object.prototype.hasOwnProperty.call(known, field)) return null;
+    return { field: field, controlId: known[field] };
+  }
+
+  function envMarkControlError(controlId) {
+    if (!controlId) return;
+    var node = document.getElementById(controlId);
+    if (!node) return;
+    node.classList.add('field-error');
+    node.style.borderColor = '#c62828';
+  }
+
+  function envClearErrors() {
+    if (!aiSection) return;
+    var marked = aiSection.querySelectorAll('.field-error');
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].classList.remove('field-error');
+      marked[i].style.borderColor = '';
+    }
+  }
+
+  function envGatherBody() {
+    var apiKeyVal = aiApiKeyInput ? aiApiKeyInput.value : '';
+    // Empty password box → null (no change). Non-empty → send the new value.
+    var apiKey = apiKeyVal.trim() ? apiKeyVal.trim() : null;
+    var timeoutVal = aiTimeoutInput ? aiTimeoutInput.value.trim() : '';
+    var timeout = timeoutVal ? parseInt(timeoutVal, 10) : null;
+    return {
+      ai: {
+        ai_enabled: true,
+        ai_provider: aiProviderSelect ? (aiProviderSelect.value || null) : null,
+        ai_base_url: aiBaseUrlInput ? (aiBaseUrlInput.value.trim() || null) : null,
+        ai_model: aiModelInput ? (aiModelInput.value.trim() || null) : null,
+        ai_timeout_seconds: timeout,
+      },
+      api_key: apiKey,
+    };
+  }
+
+  function showRestartBanner() {
+    if (!restartBanner) return;
+    while (restartBanner.firstChild) restartBanner.removeChild(restartBanner.firstChild);
+    restartBanner.appendChild(el('span', null,
+      'AI 连接已更新，重启服务后生效 / AI connection updated — restart to apply'));
+    restartBanner.style.display = 'block';
+  }
+
+  if (saveEnvBtn) saveEnvBtn.addEventListener('click', function() {
+    if (!envBanner) return;
+    envClearErrors();
+    var body = envGatherBody();
+    unifiedSave(saveEnvBtn, envBanner,
+      function() {
+        return api('/admin/config/env', {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        });
+      },
+      function(resp) {
+        showBanner(envBanner, 'ok', '已保存 / Saved');
+        if (resp && resp.restart_required) showRestartBanner();
+        loadEnv();
+      },
+      function(err, kind) {
+        if (kind === 'stale' || kind === 'readonly') return;
+        var status = err && err.status;
+        var detail = err && err.body && err.body.detail;
+        // 422 pydantic extra="forbid" → list of {loc, msg}.
+        if (status === 422 && Array.isArray(detail)) {
+          for (var i = 0; i < detail.length; i++) {
+            var loc = envParseErrorPath(detail[i].loc);
+            if (loc) envMarkControlError(loc.controlId);
+          }
+          if (!envBanner.firstChild) {
+            var first = detail[0];
+            showBanner(envBanner, 'err', (first && first.msg) || '校验失败 / Validation failed');
+          }
+          return;
+        }
+        var msg = '保存失败 / Save failed';
+        if (detail && detail.error && detail.error.message) msg = detail.error.message;
+        else if (err && err.message) msg = err.message;
+        showBanner(envBanner, 'err', msg);
+      }
+    );
+  });
+
+  // ─── Dirty-flag wiring for every form ────────────────────────────────
+  function wireDirty(node) {
+    if (!node) return;
+    node.addEventListener('input', markDirty);
+    node.addEventListener('change', markDirty);
+  }
+  if (targetsList) {
+    targetsList.addEventListener('input', markDirty);
+    targetsList.addEventListener('change', markDirty);
+  }
+  if (billFieldsList) {
+    billFieldsList.addEventListener('input', markDirty);
+    billFieldsList.addEventListener('change', markDirty);
+  }
+  wireDirty(billPromptHeader);
+  wireDirty(billUrlInput);
+  wireDirty(billAppTokenInput);
+  wireDirty(aiProviderSelect);
+  wireDirty(aiBaseUrlInput);
+  wireDirty(aiModelInput);
+  wireDirty(aiTimeoutInput);
+  wireDirty(aiApiKeyInput);
+
+  // ─── Dry-run dirty-check guard ─────────────────────────────────────
+  if (testPromptBtn) {
+    testPromptBtn.addEventListener('click', function(evt) {
+      if (isDirty()) {
+        var ok = confirm('有未保存的改动，干跑将使用已保存的配置。继续？\n' +
+          'You have unsaved edits — the dry-run will use the SAVED config. Continue?');
+        if (!ok) {
+          evt.preventDefault();
+          evt.stopImmediatePropagation();
+        }
+      }
+    }, true);
+  }
 
   // --- Init ---
   loadToken();
   refreshStatus();
   loadExtractTargets();
   loadBillProfile();
+  loadEnv();
 })();
