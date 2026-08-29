@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import errno
 import logging
+import os
 import re
 import secrets
 import urllib.parse
@@ -19,12 +22,14 @@ from .ai_profile import (
     AiProfileRegistryUnavailableError,
     ProfileConfigError,
     build_field_prompts,
+    validate_profile_candidate,
 )
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import FieldSpec, encode_fields
 from .pipeline import AiPipeline, PipelineResult
 from .target_registry import TargetRegistry, TargetRegistryError, TargetRegistryUnavailableError, TargetSelectorError
+from .toml_writer import dump_profile
 
 
 class WebhookRequest(BaseModel):
@@ -880,3 +885,262 @@ async def feishu_picker_parse_url(
     table_id = table_values[0]
 
     return {"app_token": app_token, "table_id": table_id}
+
+
+# ---------------------------------------------------------------------------
+# Admin config profile read/write (frontend config UI support)
+#
+# GET /admin/config/profile  : editable profile shape (degrades 200 on fail-closed)
+# PUT /admin/config/profile  : validate → atomic save (tmp + os.replace) → reload
+#
+# Auth mirrors reload_config (X-Admin-Token + compare_digest; CONFIG_RELOAD_TOKEN
+# unset → 404 RELOAD_DISABLED). Both routes 404 AI_DISABLED when AI_ENABLED=false
+# or ai_registry is None. PUT serializes writes via a module-level asyncio.Lock
+# + generation guard (STALE_WRITE 409) so concurrent edits can't clobber each
+# other. The webhook contract is unchanged.
+# ---------------------------------------------------------------------------
+
+# Module-level write mutex — one in-flight profile save at a time. Persists
+# across requests; tests reset app.state per-case but the lock itself is just
+# a mutex (never holds profile data).
+_profile_write_lock = asyncio.Lock()
+
+
+def _profile_to_editable(profile: AiProfile) -> dict[str, object]:
+    """AiProfile → editable dict shape (all 7 field keys, None preserved).
+
+    Distinct from _field_spec_to_dict callers that drop None: the config UI
+    needs every key present so the form can render empty inputs uniformly.
+    """
+    return {
+        "prompt_header": profile.prompt_header,
+        "summary_field": profile.summary_field,
+        "bill": {
+            "app_token": profile.bill_app_token,
+            "table_id": profile.bill_table_id,
+        },
+        "fields": [_field_spec_to_dict(spec) for spec in profile.fields],
+    }
+
+
+@app.get(
+    "/admin/config/profile",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}},
+)
+async def config_profile_get(
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if not settings.ai_enabled or ai_registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_DISABLED", "message": "AI stage is disabled"},
+            },
+        )
+
+    registry_status = ai_registry.get_status()
+
+    # Fail-closed branch: get_snapshot raises. The route stays 200 (mirrors
+    # GET /admin/ai/profile) so admin tooling can render degraded diagnostics.
+    try:
+        snapshot = ai_registry.get_snapshot()
+    except AiProfileRegistryUnavailableError:
+        return {
+            "profile": None,
+            "generation": registry_status.get("generation", 0),
+            "config_valid": registry_status.get("config_valid", False),
+            "last_reload_error": registry_status.get("last_reload_error"),
+        }
+
+    editable = _profile_to_editable(snapshot.profile)
+    return {
+        "prompt_header": editable["prompt_header"],
+        "summary_field": editable["summary_field"],
+        "bill": editable["bill"],
+        "fields": editable["fields"],
+        "generation": registry_status.get("generation", 0),
+        "config_valid": registry_status.get("config_valid", True),
+    }
+
+
+class ConfigProfilePutBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: dict[str, object]
+    base_generation: int = Field(..., ge=0)
+
+
+@app.put(
+    "/admin/config/profile",
+    responses={
+        401: {"model": WebhookErrorResponse},
+        404: {"model": WebhookErrorResponse},
+        409: {"model": WebhookErrorResponse},
+        422: {"model": WebhookErrorResponse},
+        502: {"model": WebhookErrorResponse},
+    },
+)
+async def config_profile_put(
+    payload: ConfigProfilePutBody,
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if not settings.ai_enabled or ai_registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_DISABLED", "message": "AI stage is disabled"},
+            },
+        )
+
+    profile_file: Path | None = settings.ai_profile_file
+    if profile_file is None:
+        # AI is enabled but no profile path configured — cannot write.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {
+                    "code": "RUNTIME_READONLY",
+                    "message": "AI_PROFILE_FILE is not configured",
+                    "suggested_action": "host-edit",
+                },
+            },
+        )
+
+    async with _profile_write_lock:
+        registry_status = ai_registry.get_status()
+        current_generation = registry_status.get("generation", 0)
+        if current_generation != payload.base_generation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "STALE_WRITE",
+                        "message": (
+                            f"registry generation {current_generation} != "
+                            f"base_generation {payload.base_generation}"
+                        ),
+                    },
+                },
+            )
+
+        # Resolve the extract-table三元组 via the target registry (legacy mode
+        # returns the env-configured default target; dynamic mode uses
+        # default_alias). TargetSelectorError → 422 (mirrors ingest_ocr).
+        target_registry: TargetRegistry = request.app.state.target_registry
+        try:
+            target = target_registry.resolve(book_alias=None, year=None)
+        except TargetSelectorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "INVALID_TARGET_SELECTOR",
+                        "message": str(exc),
+                    },
+                },
+            ) from exc
+        except TargetRegistryUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "TARGET_REGISTRY_UNAVAILABLE",
+                        "message": str(exc),
+                    },
+                },
+            ) from exc
+
+        # Convert the editable shape (top-level summary_field) to the
+        # dump_profile input shape (extract.summary_field).
+        profile_in = payload.profile
+        dump_input = {
+            "prompt_header": profile_in.get("prompt_header"),
+            "extract": {"summary_field": profile_in.get("summary_field")},
+            "bill": profile_in.get("bill", {}),
+            "fields": profile_in.get("fields", []),
+        }
+        candidate_text = dump_profile(dump_input)
+
+        feishu_client: FeishuClient = request.app.state.feishu_client
+        _validated_profile, _whitelists, errors = await validate_profile_candidate(
+            candidate_text,
+            feishu_client,
+            target.app_token,
+            target.table_id,
+        )
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "errors": errors,
+                },
+            )
+
+        # Atomic save: .bak the current file → write tmp → os.replace(tmp, real).
+        # os.replace is atomic on POSIX (rename(2)); a crash between tmp write
+        # and replace leaves the old file intact.
+        try:
+            if profile_file.is_file():
+                bak_path = profile_file.with_suffix(".toml.bak")
+                bak_path.write_bytes(profile_file.read_bytes())
+            tmp_path = profile_file.with_suffix(".toml.tmp")
+            tmp_path.write_text(candidate_text, encoding="utf-8")
+            os.replace(tmp_path, profile_file)
+        except OSError as exc:
+            # :ro mount (Docker) or permission issue — surface a host-edit hint.
+            if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "success": False,
+                        "request_id": request_id,
+                        "error": {
+                            "code": "RUNTIME_READONLY",
+                            "message": (
+                                "runtime 目录只读（Docker :ro 挂载），"
+                                "请在宿主机编辑文件后调用 /admin/config/reload"
+                            ),
+                            "suggested_action": "host-edit",
+                        },
+                    },
+                ) from exc
+            raise
+
+        # Reload the registry so the new generation reflects the saved file.
+        # reload(force=True) returns get_status(); we surface the new generation.
+        await ai_registry.reload(force=True)
+        new_status = ai_registry.get_status()
+
+    return {
+        "success": True,
+        "generation": new_status.get("generation", 0),
+        "warnings": [],
+    }
