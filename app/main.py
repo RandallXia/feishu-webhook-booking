@@ -1501,3 +1501,265 @@ async def config_targets_put(
         "success": True,
         "generation": new_describe.get("reload_generation", 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin config env read/write (frontend config UI support)
+#
+# GET /admin/config/env  : AI connection settings (NEVER returns secret values;
+#                          *_set booleans only)
+# PUT /admin/config/env  : line-based env file edit (atomic save)
+#
+# PUT reads the existing env file, replaces/adds/deletes AI_* lines, preserves
+# all other lines (comments + FEISHU_* + WEBHOOK_*) byte-for-byte. env_file_path
+# None (env vars set directly, no file) → 409 ENV_FILE_NOT_FOUND. Auth mirrors
+# reload_config. A separate module-level asyncio.Lock serializes env writes.
+# The webhook contract is unchanged; a restart is required for changes to take
+# effect (env vars are read once at import via _load_runtime_env_files).
+# ---------------------------------------------------------------------------
+
+_env_write_lock = asyncio.Lock()
+
+# Characters that force double-quote wrapping per config.py:36 strip semantics.
+_ENV_QUOTE_CHARS = frozenset('#= "\'\t\\')
+
+
+def _quote_env_value(value: str) -> str:
+    """Wrap *value* for an env file line, quoting when necessary.
+
+    Mirrors the inverse of config.py:36 strip-one-layer semantics: if the value
+    contains any char that would break line parsing (# = space " ' \\ tab), wrap
+    in double quotes and escape internal " and \\ so the loader recovers the
+    original. Bare values (no special chars) pass through unquoted.
+    """
+    if value == "":
+        return '""'
+    if any(c in _ENV_QUOTE_CHARS for c in value):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def _format_env_line(key: str, value: object) -> str:
+    if isinstance(value, bool):
+        return f"{key}={'true' if value else 'false'}"
+    if isinstance(value, int):
+        return f"{key}={value}"
+    return f"{key}={_quote_env_value(str(value))}"
+
+
+def _rewrite_env_lines(
+    original_text: str, updates: dict[str, object | None]
+) -> str:
+    """Apply *updates* to an env file's text, preserving all other lines.
+
+    For each AI_* key in *updates*:
+      - value is None → delete any matching existing line (delete semantics)
+      - value is a str/int/bool → replace the first matching line; if absent,
+        append at the end of the file
+    Lines not matching any update key pass through verbatim. The matching
+    pattern ``^(export )?AI_(\\w+)=`` mirrors config.py:24 loader's export-strip.
+    """
+    env_line_re = re.compile(r"^(export\s+)?(AI_\w+)\s*=")
+    consumed: set[str] = set()
+    out_lines: list[str] = []
+
+    for raw_line in original_text.splitlines():
+        m = env_line_re.match(raw_line)
+        if m:
+            key = m.group(2)
+            if key in updates:
+                new_val = updates[key]
+                if new_val is None:
+                    consumed.add(key)
+                    continue
+                out_lines.append(_format_env_line(key, new_val))
+                consumed.add(key)
+                continue
+        out_lines.append(raw_line)
+
+    # Append any update keys that weren't present in the original file.
+    # Order: iterate updates in insertion order (Python dict preserves it) so
+    # the body field order is reflected in the appended block.
+    appended: list[str] = []
+    for key, new_val in updates.items():
+        if key in consumed:
+            continue
+        if new_val is None:
+            continue
+        appended.append(_format_env_line(key, new_val))
+
+    if appended:
+        # Ensure a newline separates existing content from appended block.
+        if out_lines and out_lines[-1].strip() != "":
+            out_lines.append("")
+        out_lines.extend(appended)
+
+    # Preserve trailing newline if the original had one.
+    had_trailing_newline = original_text.endswith("\n")
+    result = "\n".join(out_lines)
+    if had_trailing_newline:
+        result += "\n"
+    return result
+
+
+@app.get(
+    "/admin/config/env",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}},
+)
+async def config_env_get(
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    env_file = settings.env_file_path
+    return {
+        "env_file": str(env_file) if env_file is not None else None,
+        "ai": {
+            "ai_enabled": settings.ai_enabled,
+            "ai_provider": settings.ai_provider,
+            "ai_base_url": settings.ai_base_url,
+            "ai_model": settings.ai_model,
+            "ai_timeout_seconds": settings.ai_timeout_seconds,
+            "ai_api_key_set": bool(settings.ai_api_key),
+        },
+        "other": {
+            "feishu_app_id": settings.feishu_app_id,
+            "feishu_app_secret_set": bool(settings.feishu_app_secret),
+            "webhook_shared_token_set": bool(settings.webhook_shared_token),
+            "config_reload_token_set": bool(settings.config_reload_token),
+        },
+        "restart_required": True,
+    }
+
+
+class ConfigEnvPutBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ai: dict[str, object]
+    api_key: str | None = None
+
+
+@app.put(
+    "/admin/config/env",
+    responses={
+        401: {"model": WebhookErrorResponse},
+        404: {"model": WebhookErrorResponse},
+        409: {"model": WebhookErrorResponse},
+        422: {"model": WebhookErrorResponse},
+    },
+)
+async def config_env_put(
+    payload: ConfigEnvPutBody,
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    env_file: Path | None = settings.env_file_path
+    if env_file is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {
+                    "code": "ENV_FILE_NOT_FOUND",
+                    "message": (
+                        "未找到 env 文件（环境变量直设模式），"
+                        "请通过 FEISHU_ENV_FILE 或项目根 .env 文件管理"
+                    ),
+                },
+            },
+        )
+
+    # Build the updates dict from the body. AI_API_KEY is special: non-empty
+    # string → update; None/"" → skip (leave the existing line untouched). The
+    # other AI_* keys: None → delete the line; str/int/bool → replace/append.
+    ai = payload.ai
+    updates: dict[str, object | None] = {}
+
+    if "ai_enabled" in ai:
+        ai_enabled = ai["ai_enabled"]
+        if isinstance(ai_enabled, bool):
+            updates["AI_ENABLED"] = ai_enabled
+
+    # Body field name → env key name. None → delete line; str/int → replace/append.
+    _STR_FIELD_MAP = {
+        "ai_provider": "AI_PROVIDER",
+        "ai_base_url": "AI_BASE_URL",
+        "ai_model": "AI_MODEL",
+    }
+    _INT_FIELD_MAP = {"ai_timeout_seconds": "AI_TIMEOUT_SECONDS"}
+
+    for body_field, env_key in _STR_FIELD_MAP.items():
+        if body_field in ai:
+            val = ai[body_field]
+            if val is None or isinstance(val, str):
+                updates[env_key] = val
+
+    for body_field, env_key in _INT_FIELD_MAP.items():
+        if body_field in ai:
+            val = ai[body_field]
+            if val is None or isinstance(val, int):
+                updates[env_key] = val
+
+    api_key = payload.api_key
+    if api_key:
+        updates["AI_API_KEY"] = api_key
+
+    async with _env_write_lock:
+        try:
+            original_text = env_file.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            # File disappeared between GET and PUT — treat as not-editable.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "ENV_FILE_NOT_FOUND",
+                        "message": f"env file vanished: {env_file}",
+                    },
+                },
+            ) from exc
+
+        new_text = _rewrite_env_lines(original_text, updates)
+
+        try:
+            bak_path = env_file.with_suffix(".env.bak")
+            bak_path.write_bytes(original_text.encode("utf-8"))
+            tmp_path = env_file.with_suffix(".env.tmp")
+            tmp_path.write_text(new_text, encoding="utf-8")
+            os.replace(tmp_path, env_file)
+        except OSError as exc:
+            if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "success": False,
+                        "request_id": request_id,
+                        "error": {
+                            "code": "RUNTIME_READONLY",
+                            "message": (
+                                "runtime 目录只读（Docker :ro 挂载），"
+                                "请在宿主机编辑文件后重启服务"
+                            ),
+                            "suggested_action": "host-edit",
+                        },
+                    },
+                ) from exc
+            raise
+
+    return {
+        "success": True,
+        "restart_required": True,
+    }

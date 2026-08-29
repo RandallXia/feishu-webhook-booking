@@ -82,6 +82,7 @@ class Settings:
     ai_profile_file: Path | None
     ai_profile_reload_interval_seconds: int
     ai_dedup_ttl_seconds: int
+    env_file_path: Path | None
 
 
 def _require_env(name: str) -> str:
@@ -184,4 +185,23 @@ def get_settings() -> Settings:
         ai_profile_file=ai_profile_file,
         ai_profile_reload_interval_seconds=_int_env("AI_PROFILE_RELOAD_INTERVAL_SECONDS", 10),
         ai_dedup_ttl_seconds=_int_env("AI_DEDUP_TTL_SECONDS", 300),
+        env_file_path=_detect_env_file_path(),
     )
+
+
+def _detect_env_file_path() -> Path | None:
+    """Resolve the env file backing the running Settings, or None.
+
+    Precedence: FEISHU_ENV_FILE (if set AND the file exists on disk) →
+    PROJECT_ROOT/.env (if it exists) → None. Existence-gated so the admin
+    UI can distinguish "env vars set directly, no file to edit" (None → 409
+    ENV_FILE_NOT_FOUND) from "file is editable". Does NOT re-load the file —
+    _load_runtime_env_files already did that at import time.
+    """
+    external = _path_env("FEISHU_ENV_FILE")
+    if external is not None and external.is_file():
+        return external
+    root_env = PROJECT_ROOT / ".env"
+    if root_env.is_file():
+        return root_env
+    return None
