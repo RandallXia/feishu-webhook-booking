@@ -55,11 +55,14 @@ _VALID_TYPES = {"text", "number", "single_select", "date", "passthrough"}
 _VALID_TARGETS = {"extract", "bill"}
 
 
-def parse_profile(path: Path) -> AiProfile:
-    if not path.is_file():
-        raise ProfileConfigError(f"Missing profile file: {path}")
+def parse_profile_text(text: str) -> AiProfile:
+    """Parse a profile TOML string into an AiProfile.
 
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    Pure text-level parser — no filesystem access. All ProfileConfigError
+    messages raised here are part of the public contract (golden-locked by
+    test_ai_profile_parse.py); the path wrapper parse_profile delegates here.
+    """
+    data = tomllib.loads(text)
 
     extract_section = data.get("extract")
     if not isinstance(extract_section, dict):
@@ -173,6 +176,142 @@ def parse_profile(path: Path) -> AiProfile:
         bill_table_id=bill_table_id,
         fields=tuple(specs),
     )
+
+
+def parse_profile(path: Path) -> AiProfile:
+    """Path wrapper around parse_profile_text.
+
+    Keeps the file-level error (Missing profile file: {path}) here;
+    delegates all text-level parsing (and its ProfileConfigError messages)
+    to parse_profile_text.
+    """
+    if not path.is_file():
+        raise ProfileConfigError(f"Missing profile file: {path}")
+    return parse_profile_text(path.read_text(encoding="utf-8"))
+
+
+async def validate_profile_candidate(
+    profile_text: str,
+    feishu: FeishuClient,
+    extract_app_token: str,
+    extract_table_id: str,
+) -> tuple[AiProfile | None, dict[str, set[str]], list[dict]]:
+    """Validate a candidate profile against live Feishu table schemas.
+
+    Used by the admin "test" route to dry-run a profile before installation.
+    The extract-table三元组 (extract_app_token/extract_table_id) is passed
+    explicitly — the caller resolves it via target_registry; this function
+    does NOT read the registry (single-testable).
+
+    Returns (profile, option_whitelists, errors):
+      - profile: parsed AiProfile (None only when parse or bill list_fields
+        fails — fail-closed: cannot validate fields without the bill schema)
+      - option_whitelists: single_select feishu_field → option name set
+        (empty when parse or bill list_fields failed)
+      - errors: list of {path, message} dicts; collect-all semantics — never
+        raises on a single defect, surfaces every defect at once
+
+    Path taxonomy (stable contract for the UI):
+      - "profile"                    parse_profile_text failed
+      - "bill"                       bill list_fields failed (fail-closed)
+      - "fields[i].fallback"         single_select fallback empty OR not in options
+      - "fields[i].feishu_field"     target="bill" field name not in bill table
+      - "extract"                    extract list_fields failed
+      - "extract.summary_field"      summary_field not in extract table fields
+    """
+    errors: list[dict] = []
+
+    try:
+        profile = parse_profile_text(profile_text)
+    except ProfileConfigError as exc:
+        return None, {}, [{"path": "profile", "message": str(exc)}]
+
+    # Fail-closed on bill schema: without it we can neither validate
+    # single_select options nor bill field names, so refuse the candidate
+    # outright (profile=None) rather than emit a partial verdict.
+    try:
+        bill_fields_map = await feishu.list_fields(
+            profile.bill_app_token, profile.bill_table_id
+        )
+    except FeishuClientError as exc:
+        return None, {}, [
+            {"path": "bill", "message": f"list_fields failed: {exc}"}
+        ]
+
+    whitelists = _extract_whitelists(bill_fields_map)
+
+    # Collect ALL defects — the UI shows them together so the user can fix the
+    # whole profile at once (unlike the registry, which fail-fast raises on
+    # the first single_select problem). Bill-side check expanded beyond
+    # single_select: a misnamed text/number/date/passthrough field is also a
+    # defect here, since this is the dry-run "does the profile fit the live
+    # tables" verdict.
+    bill_field_names = set(bill_fields_map.keys())
+    for i, spec in enumerate(profile.fields):
+        if spec.target != "bill":
+            continue
+        if spec.feishu_field not in bill_field_names:
+            errors.append({
+                "path": f"fields[{i}].feishu_field",
+                "message": (
+                    f"bill field {spec.feishu_field!r} (ai_key={spec.ai_key!r}) "
+                    f"not found in bill table fields list"
+                ),
+            })
+            # Don't `continue` — a missing field still leaves its single_select
+            # options undefined, which is itself a defect the UI should surface
+            # (collect-all semantics: both the missing field name AND the
+            # fallback-without-options errors are real, distinct problems).
+        if spec.type == "single_select":
+            options = whitelists.get(spec.feishu_field)
+            if not spec.fallback:
+                errors.append({
+                    "path": f"fields[{i}].fallback",
+                    "message": (
+                        f"single_select field {spec.feishu_field!r} "
+                        f"(ai_key={spec.ai_key!r}) has no fallback"
+                    ),
+                })
+            elif options is None or spec.fallback not in options:
+                errors.append({
+                    "path": f"fields[{i}].fallback",
+                    "message": (
+                        f"single_select field {spec.feishu_field!r} "
+                        f"fallback {spec.fallback!r} is not in the available "
+                        f"options"
+                    ),
+                })
+
+    # Extract list_fields is NOT fail-closed — a bill-side valid candidate
+    # still surfaces the extract error so the UI can show it.
+    try:
+        extract_fields_map = await feishu.list_fields(
+            extract_app_token, extract_table_id
+        )
+    except FeishuClientError as exc:
+        errors.append({
+            "path": "extract",
+            "message": f"list_fields failed: {exc}",
+        })
+        extract_fields_map = {}
+
+    # Gap fix: summary_field must exist in the extract table — without this the
+    # AI summary writeback would silently target a nonexistent column.
+    if (
+        "extract" not in {e["path"] for e in errors}
+        and profile.summary_field not in extract_fields_map
+    ):
+        errors.append({
+            "path": "extract.summary_field",
+            "message": (
+                f"summary_field {profile.summary_field!r} not found in "
+                f"extract table fields"
+            ),
+        })
+
+    # Profile returns even on validation failure — the UI may display the
+    # parsed structure for editing. Errors empty ⇒ approved.
+    return profile, whitelists, errors
 
 
 @dataclass(frozen=True, slots=True)
