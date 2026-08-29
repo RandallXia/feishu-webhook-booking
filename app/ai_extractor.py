@@ -41,7 +41,7 @@ _FIELD_TYPES: dict[str, str] = {
 }
 
 _REQUIRED_KEYS = list(_FIELD_TYPES.keys())
-_BILL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_BILL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$")
 
 
 class AiExtractorError(RuntimeError):
@@ -116,7 +116,7 @@ def _validate_input(raw: dict) -> ExtractionResult:
 
     if not isinstance(bill_date, str) or not _BILL_DATE_RE.match(bill_date):
         raise AiExtractorError(
-            f"Field 'bill_date' must match YYYY-MM-DD, got {bill_date!r}",
+            f"Field 'bill_date' must match YYYY-MM-DD or YYYY-MM-DD HH:mm, got {bill_date!r}",
             stage="validate",
         )
 
@@ -186,7 +186,9 @@ class AiExtractor:
                     },
                 }
             ],
-            "tool_choice": {"type": "tool", "name": "submit_bill"},
+            # tool_choice omitted: some relay backends (e.g. Aliyun Qwen in
+            # thinking mode) reject forced tool_choice. The tool schema in
+            # the system prompt is sufficient for the model to call it.
         }
 
         start = time.time()

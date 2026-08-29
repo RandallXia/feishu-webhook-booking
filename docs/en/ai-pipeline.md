@@ -117,9 +117,9 @@ prompt = "Bill category, e.g. 餐饮/交通/购物/日用/娱乐/医疗/其他"
 [[fields]]
 ai_key = "bill_date"
 feishu_field = "账单日期"
-type = "date"                          # YYYY-MM-DD → Asia/Shanghai midnight millisecond timestamp
+type = "date"                          # YYYY-MM-DD or YYYY-MM-DD HH:mm → Asia/Shanghai millisecond timestamp
 target = "bill"
-prompt = "Bill date in YYYY-MM-DD; if unknown, use today"
+prompt = "Bill date in YYYY-MM-DD HH:mm (with time); if unknown, use today"
 
 [[fields]]
 ai_key = "raw_source"
@@ -137,7 +137,7 @@ prompt = ""
 | `text` | Stripped and written; empty string skipped with a warning | — |
 | `number` | `float()` passthrough | AI layer already validates `amount>0` |
 | `single_select` | Value must be in the whitelist; otherwise use `fallback` | `fallback` also missing from whitelist → `ValueError` → `ai_status="failed"` |
-| `date` | `YYYY-MM-DD` → Asia/Shanghai midnight millisecond timestamp | Bad format → falls back to today (Shanghai tz) + warning |
+| `date` | `YYYY-MM-DD` or `YYYY-MM-DD HH:mm` → Asia/Shanghai ms timestamp (HH:mm preserved when present, midnight when date-only) | Bad format → falls back to today (Shanghai tz) + warning |
 | `passthrough` | Copies `extraction.summary` directly | `source` not `"summary"` → `ProfileConfigError` at startup |
 
 ### Parse constraints

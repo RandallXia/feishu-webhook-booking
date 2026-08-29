@@ -170,9 +170,10 @@ async def test_anthropic_happy_path(monkeypatch):
     # And: header x-api-key is present
     assert req.headers["x-api-key"] == "sk-test"
     assert req.headers["anthropic-version"] == "2023-06-01"
-    # And: body contains tool_choice with name=submit_bill
+    # And: body does NOT contain tool_choice (relay compat: forced tool_choice
+    # rejected by some backends, e.g. Aliyun Qwen thinking mode)
     body = json.loads(req.content)
-    assert body["tool_choice"] == {"type": "tool", "name": "submit_bill"}
+    assert "tool_choice" not in body
     assert body["tools"][0]["name"] == "submit_bill"
     assert set(body["tools"][0]["input_schema"]["properties"].keys()) == set(_VALID_INPUT.keys())
     # And: returns ExtractionResult with all 7 fields populated
@@ -386,6 +387,24 @@ async def test_bill_date_format_validation(monkeypatch):
 
     # Then: AiExtractorError is raised with stage="validate"
     assert exc.value.stage == "validate"
+
+
+async def test_bill_date_with_hhmm_accepts(monkeypatch):
+    # Given: a mock returning bill_date="2026-08-28 09:57" (with HH:mm)
+    settings = _make_ai_settings(provider="anthropic")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        valid = {**_VALID_INPUT, "bill_date": "2026-08-28 09:57"}
+        return _anthropic_response(valid)
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: ExtractionResult has bill_date with HH:mm preserved
+    assert result.bill_date == "2026-08-28 09:57"
 
 
 async def test_empty_string_field_raises(monkeypatch):

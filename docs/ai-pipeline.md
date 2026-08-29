@@ -119,9 +119,9 @@ prompt = "账单分类，如：餐饮/交通/购物/日用/娱乐/医疗/其他"
 [[fields]]
 ai_key = "bill_date"
 feishu_field = "账单日期"
-type = "date"                          # YYYY-MM-DD → Asia/Shanghai 当天 0 点毫秒时间戳
+type = "date"                          # YYYY-MM-DD 或 YYYY-MM-DD HH:mm → Asia/Shanghai 毫秒时间戳
 target = "bill"
-prompt = "账单发生日期，格式 YYYY-MM-DD；如无法判断则给出今天日期"
+prompt = "账单发生日期，格式 YYYY-MM-DD HH:mm（带时间）；如无法判断则给出今天日期"
 
 [[fields]]
 ai_key = "raw_source"
@@ -139,7 +139,7 @@ prompt = ""
 | `text` | 去空格后写入；空串跳过并记 warning | — |
 | `number` | `float()` 透传 | AI 层已校验 `amount>0` |
 | `single_select` | 值必须在白名单内；不在则用 `fallback` | `fallback` 也不在白名单 → `ValueError` → `ai_status="failed"` |
-| `date` | `YYYY-MM-DD` → Asia/Shanghai 当天 0 点毫秒时间戳 | 格式非法 → 回退为今天（上海时区）+ warning |
+| `date` | `YYYY-MM-DD` 或 `YYYY-MM-DD HH:mm` → Asia/Shanghai 毫秒时间戳（带时间则保留时分，纯日期为当天 0 点） | 格式非法 → 回退为今天（上海时区）+ warning |
 | `passthrough` | 直接拷贝 `extraction.summary` | `source` 非 `"summary"` → 启动期 `ProfileConfigError` |
 
 ### 解析约束 / Parse constraints
