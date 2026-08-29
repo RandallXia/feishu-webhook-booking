@@ -16,6 +16,7 @@ from .ai_profile import (
     AiProfileRegistry,
     AiProfileRegistryUnavailableError,
     ProfileConfigError,
+    build_field_prompts,
 )
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
@@ -469,9 +470,7 @@ async def ai_test_dry_run(
         ) from exc
 
     extractor: AiExtractor | None = getattr(request.app.state, "ai_extractor", None)
-    field_prompts = {
-        spec.ai_key: spec.prompt for spec in snapshot.profile.fields if spec.type != "passthrough"
-    }
+    field_prompts = build_field_prompts(snapshot.profile, snapshot.option_whitelists)
 
     try:
         extraction: ExtractionResult = await extractor.extract(

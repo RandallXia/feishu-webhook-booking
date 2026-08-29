@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 from .ai_extractor import AiExtractor, AiExtractorError, ExtractionResult
-from .ai_profile import AiProfile
+from .ai_profile import AiProfile, build_field_prompts
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import encode_fields
 from .target_registry import FeishuTargetConfig
@@ -156,11 +156,16 @@ class AiPipeline:
                 dedup_hit=True,
             )
 
-        field_prompts = {
-            spec.ai_key: spec.prompt
-            for spec in profile.fields
-            if spec.type != "passthrough"
-        }
+        # Resolve whitelists BEFORE building field_prompts (single_select option
+        # injection needs the whitelist). Production path always provides
+        # option_whitelists from the registry snapshot; the cache fallback is
+        # a Wave-1 bridge for tests that don't pass them.
+        if option_whitelists is None:
+            whitelists = await self._whitelist_cache.get(profile)
+        else:
+            whitelists = option_whitelists
+
+        field_prompts = build_field_prompts(profile, whitelists)
 
         start = time.time()
         try:
@@ -187,11 +192,6 @@ class AiPipeline:
             target.alias,
             elapsed_ms,
         )
-
-        if option_whitelists is None:
-            whitelists = await self._whitelist_cache.get(profile)
-        else:
-            whitelists = option_whitelists
 
         try:
             extract_fields, bill_fields, warnings = encode_fields(

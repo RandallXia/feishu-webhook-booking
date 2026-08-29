@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from app.ai_profile import AiProfile, ProfileConfigError, parse_profile
+from app.field_codec import FieldSpec
 
 
 # ─── Test helpers ──────────────────────────────────────────────────────────
@@ -256,3 +257,141 @@ def test_passthrough_without_summary_source_raises(tmp_path):
     path = _write_profile(tmp_path, bad)
     with pytest.raises(ProfileConfigError, match="raw_source"):
         parse_profile(path)
+
+
+# ─── build_field_prompts — single_select option injection ──────────────────
+
+
+def _make_build_prompts_profile() -> AiProfile:
+    """Minimal profile with text, single_select, date, and passthrough fields."""
+    return AiProfile(
+        prompt_header="test",
+        summary_field="精简原始数据",
+        bill_app_token="tok",
+        bill_table_id="tbl",
+        fields=(
+            FieldSpec(
+                ai_key="summary", feishu_field="精简原始数据", type="text",
+                target="extract", prompt="提炼摘要",
+            ),
+            FieldSpec(
+                ai_key="flow_type", feishu_field="收支类型", type="single_select",
+                target="bill", fallback="支出", prompt="支出或收入",
+            ),
+            FieldSpec(
+                ai_key="category", feishu_field="分类", type="single_select",
+                target="bill", fallback="其他", prompt="消费分类",
+            ),
+            FieldSpec(
+                ai_key="bill_date", feishu_field="日期", type="date",
+                target="bill", prompt="日期 YYYY-MM-DD",
+            ),
+            FieldSpec(
+                ai_key="raw_source", feishu_field="原始信息", type="passthrough",
+                target="bill", source="summary",
+            ),
+        ),
+    )
+
+
+def test_build_field_prompts_injects_options():
+    """
+    GIVEN a profile with single_select fields and a whitelist dict
+    WHEN build_field_prompts is called
+    THEN single_select prompts have the option suffix appended
+      AND non-single_select prompts are unchanged
+      AND passthrough fields are excluded
+    """
+    from app.ai_profile import build_field_prompts
+
+    profile = _make_build_prompts_profile()
+    whitelists = {
+        "收支类型": {"支出", "收入"},
+        "分类": {"餐饮", "交通", "购物", "其他"},
+    }
+    result = build_field_prompts(profile, whitelists)
+
+    # single_select prompts get option suffix
+    assert "支出或收入" in result["flow_type"]
+    assert "收支类型" in result["flow_type"] or "支出/收入" in result["flow_type"] or "收入/支出" in result["flow_type"]
+    assert "【" in result["flow_type"] and "】" in result["flow_type"]
+
+    assert "消费分类" in result["category"]
+    assert "【" in result["category"] and "】" in result["category"]
+
+    # text and date prompts unchanged
+    assert result["summary"] == "提炼摘要"
+    assert result["bill_date"] == "日期 YYYY-MM-DD"
+
+    # passthrough excluded
+    assert "raw_source" not in result
+
+
+def test_build_field_prompts_empty_whitelist():
+    """
+    GIVEN a profile with single_select fields but an empty whitelist dict
+    WHEN build_field_prompts is called
+    THEN single_select prompts are unchanged (no options to inject)
+    """
+    from app.ai_profile import build_field_prompts
+
+    profile = _make_build_prompts_profile()
+    result = build_field_prompts(profile, {})
+
+    # single_select prompts unchanged when no whitelist
+    assert result["flow_type"] == "支出或收入"
+    assert result["category"] == "消费分类"
+    assert "【" not in result["flow_type"]
+    assert "【" not in result["category"]
+
+
+def test_build_field_prompts_partial_whitelist():
+    """
+    GIVEN a profile with single_select fields but only partial whitelist
+    WHEN build_field_prompts is called
+    THEN fields with whitelist entries get option injection
+      AND fields without whitelist entries are unchanged
+    """
+    from app.ai_profile import build_field_prompts
+
+    profile = _make_build_prompts_profile()
+    whitelists = {
+        "收支类型": {"支出", "收入"},
+        # "分类" intentionally missing
+    }
+    result = build_field_prompts(profile, whitelists)
+
+    assert "【" in result["flow_type"]
+    assert "【" not in result["category"]
+    assert result["category"] == "消费分类"
+
+
+def test_build_field_prompts_option_order_deterministic():
+    """
+    GIVEN a whitelist with multiple options for a single_select field
+    WHEN build_field_prompts is called
+    THEN the options are joined in sorted order (deterministic output)
+    """
+    from app.ai_profile import build_field_prompts
+
+    profile = _make_build_prompts_profile()
+    # Only flow_type is single_select in a minimal profile; use a fresh one
+    # with a single single_select field to test deterministic ordering.
+    p = AiProfile(
+        prompt_header="test",
+        summary_field="精简原始数据",
+        bill_app_token="tok",
+        bill_table_id="tbl",
+        fields=(
+            FieldSpec(
+                ai_key="category", feishu_field="分类", type="single_select",
+                target="bill", fallback="其他", prompt="分类",
+            ),
+        ),
+    )
+    whitelists = {"分类": {"交通", "餐饮", "购物", "其他", "娱乐", "日用", "医疗"}}
+    result = build_field_prompts(p, whitelists)
+    # The options should be sorted by Unicode codepoint (deterministic)
+    expected_options = "交通/其他/医疗/娱乐/日用/购物/餐饮"
+    assert expected_options in result["category"]
+    assert "【" in result["category"] and expected_options in result["category"]

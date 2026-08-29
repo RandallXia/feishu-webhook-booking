@@ -193,6 +193,31 @@ class AiProfileSnapshot:
     generation: int
 
 
+def build_field_prompts(
+    profile: AiProfile,
+    option_whitelists: dict[str, set[str]],
+) -> dict[str, str]:
+    """Build field_prompts dict, injecting single_select option constraints.
+
+    Each single_select spec's prompt is augmented with the available options
+    (e.g. "必须从以下选项中选择一个值返回：【选项1/选项2】"), so the AI
+    model knows the exact set of allowed values before generating a response.
+    Non-single_select and passthrough fields return their prompt verbatim.
+    """
+    prompts: dict[str, str] = {}
+    for spec in profile.fields:
+        if spec.type == "passthrough":
+            continue
+        prompt = spec.prompt
+        if spec.type == "single_select":
+            options = option_whitelists.get(spec.feishu_field, set())
+            if options:
+                joined = "/".join(sorted(options))
+                prompt = f"{prompt}。必须从以下选项中选择一个值返回：【{joined}】"
+        prompts[spec.ai_key] = prompt
+    return prompts
+
+
 def _extract_whitelists(
     fields_map: dict[str, dict],
 ) -> dict[str, set[str]]:
