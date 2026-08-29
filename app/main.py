@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
@@ -580,3 +582,301 @@ def _field_spec_to_dict(spec: FieldSpec) -> dict[str, object]:
         "prompt": spec.prompt,
         "source": spec.source,
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin Feishu picker endpoints (frontend config UI support)
+#
+# Four routes that mirror reload_config auth (X-Admin-Token + compare_digest;
+# CONFIG_RELOAD_TOKEN unset → 404 RELOAD_DISABLED). They proxy read-only Feishu
+# list calls + a pure URL parser so the admin page can browse bitable tables
+# without leaking credentials to the browser. The webhook contract is unchanged.
+# ---------------------------------------------------------------------------
+
+# Feishu bitable field type code → generic label. The ui_type string is
+# preferred when present (more stable across API revisions); this int map is
+# the fallback. Unrecognized codes → "unknown".
+_FEISHU_FIELD_TYPE_BY_CODE: dict[int, str] = {
+    1: "text",
+    2: "number",
+    3: "single_select",
+    4: "multi_select",
+    5: "date",
+    7: "checkbox",
+    11: "person",
+    13: "phone",
+    15: "url",
+    17: "attachment",
+    18: "single_link",
+    20: "formula",
+    21: "duplex_link",
+    22: "location",
+    1001: "date",  # created_time
+    1002: "date",  # modified_time
+    1005: "number",  # auto_number (numeric)
+}
+
+# ui_type string (case-insensitive suffix match) → generic label.
+_FEISHU_UI_TYPE_TOKENS: dict[str, str] = {
+    "text": "text",
+    "number": "number",
+    "singleselect": "single_select",
+    "multiselect": "multi_select",
+    "datetime": "date",
+    "date": "date",
+    "checkbox": "checkbox",
+}
+
+# Hostname suffix whitelist for parse-url. Subdomains of feishu.cn and
+# larksuite.com are accepted (e.g. xxx.feishu.cn, my.larksuite.com).
+_PARSE_URL_HOST_SUFFIXES = ("feishu.cn", "larksuite.com")
+
+
+def _require_admin_auth(
+    settings: Settings, x_admin_token: str | None, request_id: str
+) -> None:
+    """Mirror reload_config auth gate. Raises HTTPException on failure."""
+    if not settings.config_reload_token:
+        raise _admin_auth_error("RELOAD_DISABLED", "config reload endpoint is disabled", request_id)
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, settings.config_reload_token):
+        raise _admin_auth_error("UNAUTHORIZED", "invalid admin token", request_id)
+
+
+def _feishu_upstream_error(exc: FeishuClientError, request_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail={
+            "success": False,
+            "request_id": request_id,
+            "stage": exc.stage,
+            "error": {"code": "FEISHU_UPSTREAM_ERROR", "message": str(exc)},
+        },
+    )
+
+
+def _map_field_type(field_def: dict) -> str:
+    """Map a Feishu field_def to a generic type label.
+
+    Prefers ui_type (string, stable across API revisions), falling back to the
+    integer type code. SingleSelect is the only type the UI needs to know
+    precisely (it drives the options picker); everything else is best-effort.
+    """
+    ui_type = str(field_def.get("ui_type") or "").strip().lower()
+    if ui_type:
+        # Suffix match so "BitableSingleSelect" / "SingleSelect" both map.
+        for token, label in _FEISHU_UI_TYPE_TOKENS.items():
+            if ui_type.endswith(token):
+                return label
+    code = field_def.get("type")
+    if isinstance(code, int):
+        return _FEISHU_FIELD_TYPE_BY_CODE.get(code, "unknown")
+    return "unknown"
+
+
+def _build_field_view(field_def: dict) -> dict[str, object]:
+    """Translate one Feishu field_def into the picker response shape."""
+    field_type = _map_field_type(field_def)
+    options: list[str] | None = None
+    if field_type == "single_select":
+        prop = field_def.get("property")
+        if isinstance(prop, dict):
+            raw_options = prop.get("options")
+            if isinstance(raw_options, list):
+                options = [
+                    opt.get("name")
+                    for opt in raw_options
+                    if isinstance(opt, dict) and isinstance(opt.get("name"), str)
+                ]
+    return {
+        "name": field_def.get("field_name", ""),
+        "type": field_type,
+        "options": options,
+        "is_primary": bool(field_def.get("is_primary", False)),
+    }
+
+
+def _preview_from_record(
+    record_fields: dict, fields_meta: dict[str, dict]
+) -> str:
+    """Build a ≤80 char preview for a record.
+
+    Prefers the is_primary field's value (str-ified); falls back to the first
+    text-coercible value in fields_meta insertion order; "" when none.
+    """
+    primary_name: str | None = None
+    for name, field_def in fields_meta.items():
+        if isinstance(field_def, dict) and field_def.get("is_primary"):
+            primary_name = name
+            break
+
+    chosen: object = None
+    if primary_name is not None and primary_name in record_fields:
+        chosen = record_fields[primary_name]
+    else:
+        # First non-None value in fields_meta insertion order. A field whose
+        # value is None or absent is skipped; the first present value wins
+        # (str-ified below) so the preview is never empty-by-mistake.
+        for name in fields_meta:
+            if name in record_fields and record_fields[name] is not None:
+                chosen = record_fields[name]
+                break
+
+    if chosen is None:
+        return ""
+    preview = str(chosen)
+    return preview[:80] if len(preview) > 80 else preview
+
+
+@app.get(
+    "/admin/feishu/tables",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}, 502: {"model": WebhookErrorResponse}},
+)
+async def feishu_picker_tables(
+    request: Request,
+    app_token: str = Query(..., min_length=1),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    feishu_client: FeishuClient = request.app.state.feishu_client
+    try:
+        tables = await feishu_client.list_tables(app_token)
+    except FeishuClientError as exc:
+        logger.exception("feishu list_tables failed request_id=%s", request_id)
+        raise _feishu_upstream_error(exc, request_id) from exc
+    return {"tables": tables}
+
+
+@app.get(
+    "/admin/feishu/fields",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}, 502: {"model": WebhookErrorResponse}},
+)
+async def feishu_picker_fields(
+    request: Request,
+    app_token: str = Query(..., min_length=1),
+    table_id: str = Query(..., min_length=1),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    feishu_client: FeishuClient = request.app.state.feishu_client
+    try:
+        fields_map = await feishu_client.list_fields(app_token, table_id)
+    except FeishuClientError as exc:
+        logger.exception("feishu list_fields failed request_id=%s", request_id)
+        raise _feishu_upstream_error(exc, request_id) from exc
+    return {"fields": [_build_field_view(fd) for fd in fields_map.values()]}
+
+
+@app.get(
+    "/admin/feishu/records",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}, 502: {"model": WebhookErrorResponse}},
+)
+async def feishu_picker_records(
+    request: Request,
+    app_token: str = Query(..., min_length=1),
+    table_id: str = Query(..., min_length=1),
+    page_token: str | None = Query(default=None),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    feishu_client: FeishuClient = request.app.state.feishu_client
+    # Preview generation needs field metadata (is_primary flag) — fetch once,
+    # then map each record's fields to a preview string.
+    try:
+        fields_meta = await feishu_client.list_fields(app_token, table_id)
+        result = await feishu_client.list_records(app_token, table_id, page_token)
+    except FeishuClientError as exc:
+        logger.exception("feishu list_records failed request_id=%s", request_id)
+        raise _feishu_upstream_error(exc, request_id) from exc
+
+    items = [
+        {
+            "record_id": item["record_id"],
+            "preview": _preview_from_record(item.get("fields", {}), fields_meta),
+        }
+        for item in result.get("items", [])
+    ]
+    return {
+        "items": items,
+        "has_more": result.get("has_more", False),
+        "next_page_token": result.get("page_token"),
+    }
+
+
+class ParseUrlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(..., min_length=1, max_length=2048)
+
+
+@app.post(
+    "/admin/feishu/parse-url",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}, 422: {"model": WebhookErrorResponse}},
+)
+async def feishu_picker_parse_url(
+    payload: ParseUrlRequest,
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    parsed = urllib.parse.urlparse(payload.url)
+    hostname = (parsed.hostname or "").lower()
+
+    def _unsupported() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {
+                    "code": "UNSUPPORTED_URL",
+                    "message": "请从浏览器地址栏复制 /base/ 链接（暂不支持 wiki 链接）",
+                },
+            },
+        )
+
+    # Domain whitelist: *.feishu.cn / *.larksuite.com (suffix match covers
+    # subdomains AND the apex; an attacker-controlled lookalike domain like
+    # feishu.cn.evil.com does NOT suffix-match "feishu.cn").
+    if not any(
+        hostname == suffix or hostname.endswith("." + suffix)
+        for suffix in _PARSE_URL_HOST_SUFFIXES
+    ):
+        raise _unsupported()
+
+    # Path must contain /base/{app_token} — app_token non-empty.
+    # Split on "/" and locate the "base" segment; the next segment is the token.
+    path_segments = [seg for seg in parsed.path.split("/") if seg]
+    try:
+        base_idx = path_segments.index("base")
+    except ValueError:
+        raise _unsupported() from None
+    if base_idx + 1 >= len(path_segments):
+        raise _unsupported()
+    app_token = path_segments[base_idx + 1]
+    if not app_token:
+        raise _unsupported()
+
+    # Query must contain table={table_id} (non-empty).
+    query_params = urllib.parse.parse_qs(parsed.query)
+    table_values = query_params.get("table", [])
+    if not table_values or not table_values[0]:
+        raise _unsupported()
+    table_id = table_values[0]
+
+    return {"app_token": app_token, "table_id": table_id}
