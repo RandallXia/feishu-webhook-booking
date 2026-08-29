@@ -331,3 +331,84 @@ https://xxx.feishu.cn/base/{app_token}?table={table_id}&view=...
 
 - 返回 `ai_status="succeeded"` → 拼接正确
 - 返回 `ai_status="failed"` 且 `error` 含 `HTTP 404` → 99% 是 base URL 拼接错误
+
+## 12. 配置界面 / Config UI
+
+`/admin/ai` 页面除第 7 节的 dry-run + 手动 reload 外，还提供可视化的 targets / profile / env 编辑能力。本节描述该界面的使用约定与限制。
+
+The `/admin/ai` page also provides visual editing of targets / profile / env (beyond the dry-run + manual reload in section 7). This section covers the UI's usage contracts and limits.
+
+### URL 格式 / URL format
+
+界面只支持多维表格的**直链**：
+
+```
+https://xxx.feishu.cn/base/{app_token}?table={table_id}&view=...
+```
+
+- `app_token`：URL 路径中 `/base/` 后面那一段
+- `table_id`：query 参数 `table=` 的值
+
+从浏览器地址栏复制即可。**wiki 链接不支持**（路径里没有 `/base/`），粘贴后 UI 会提示 `UNSUPPORTED_URL`；请从多维表格本身进入并复制地址栏 URL。
+
+Only direct `/base/{app_token}?table={table_id}` links are supported (copy from the browser address bar). Wiki links are rejected with `UNSUPPORTED_URL` — open the bitable itself and copy its address-bar URL.
+
+### 配置流程简述 / Config flow
+
+1. 粘贴 URL → `POST /admin/feishu/parse-url` 解析出 `app_token` + `table_id`
+2. 选表 → `GET /admin/feishu/tables` 列出该 app 下的表
+3. 选记录 → `GET /admin/feishu/records` 分页拉取记录列表（每条带 `preview`）
+4. 字段映射 → `GET /admin/feishu/fields` 拉取字段元信息，UI 自动推导预填映射
+5. 保存 → 校验 + 原子写（tmp + `os.replace`）+ 热重载（registry.reload）
+
+1. Paste URL → `POST /admin/feishu/parse-url` extracts `app_token` + `table_id`
+2. Pick table → `GET /admin/feishu/tables` lists tables under the app
+3. Pick record → `GET /admin/feishu/records` paginates records (each with a `preview`)
+4. Field mapping → `GET /admin/feishu/fields` fetches field metadata; the UI auto-derives a prefill mapping
+5. Save → validate + atomic write (tmp + `os.replace`) + hot reload (registry.reload)
+
+### AI 连接 / AI connection
+
+UI 可编辑 `AI_PROVIDER` / `AI_MODEL` / `AI_BASE_URL` / `AI_TIMEOUT_SECONDS` / `AI_API_KEY`。`AI_API_KEY` 是 **write-only**：GET 永远只返回 `ai_api_key_set` 布尔值，不返回密钥本身。
+
+The UI can edit `AI_PROVIDER` / `AI_MODEL` / `AI_BASE_URL` / `AI_TIMEOUT_SECONDS` / `AI_API_KEY`. `AI_API_KEY` is **write-only**: GET ever returns only the `ai_api_key_set` boolean, never the key value.
+
+> ⚠️ **保存后需重启服务生效**：env 是启动时加载进 `Settings`（frozen dataclass），PUT 只改文件、不刷新运行时内存。GET 反映的是运行中的 `Settings`，而非刚写入的文件——故 GET 的 `restart_required` 恒为 `true`。
+>
+> ⚠️ **Restart required after save**: env is loaded into `Settings` (a frozen dataclass) at startup; PUT only edits the file, it does NOT refresh in-memory state. GET reflects the running `Settings`, not the just-written file — hence GET's `restart_required` is always `true`.
+
+### TOML 注释丢失 / TOML comment loss
+
+UI 保存会**重写整个 TOML 文件**（经 `app/toml_writer.py` 的确定性序列化），文件里手写的注释会丢失。每次保存前自动备份为 `<file>.toml.bak`（保留上一版内容）。`.example` 模板文件**永不被写入**——文件名不同，UI 只写 `runtime/feishu-targets.toml` / `runtime/ai-profile.toml`。
+
+A UI save **rewrites the whole TOML file** (via `app/toml_writer.py`'s deterministic serializer); hand-written comments are lost. A `.bak` backup (`<file>.toml.bak`) is auto-created before every save (holding the previous version). The `.example` templates are **never written** — different filename; the UI only writes `runtime/feishu-targets.toml` / `runtime/ai-profile.toml`.
+
+### Docker `:ro` 模式 / Docker read-only mount
+
+当 `runtime/` 卷以只读方式挂载时（`docker-compose.yml` 默认 `./runtime:/runtime:ro`），`os.replace` 会抛 `PermissionError`，保存按钮返回 `409 RUNTIME_READONLY`，UI 显示红色横幅，提示在宿主机编辑文件后调 `POST /admin/config/reload`。原文件不会被破坏（tmp + replace 是原子交换，replace 失败时原文件字节不变）。
+
+When the `runtime/` volume is mounted read-only (`docker-compose.yml` defaults to `./runtime:/runtime:ro`), `os.replace` raises `PermissionError`, the save button returns `409 RUNTIME_READONLY`, and the UI shows a red banner prompting a host-side edit followed by `POST /admin/config/reload`. The original file is NOT corrupted (tmp + replace is an atomic swap; a failed replace leaves the original byte-identical).
+
+### 新增 admin 端点清单 / New admin endpoints
+
+- `GET /admin/feishu/tables` — 列出指定 app_token 下的多维表格
+- `GET /admin/feishu/fields` — 列出指定表的字段元信息（含类型 + is_primary）
+- `GET /admin/feishu/records` — 分页列出记录，每条带 `preview`（is_primary 字段值，截断 80 字符）
+- `POST /admin/feishu/parse-url` — 解析 `/base/{app_token}?table={table_id}` 直链，wiki 链接 → 422 `UNSUPPORTED_URL`
+- `GET /admin/config/profile` — 读取可编辑 profile 形状（fail-closed 时降级 200 + profile=null）
+- `PUT /admin/config/profile` — 校验 + 原子写 + 热重载（base_generation 守卫，并发 → 409 `STALE_WRITE`）
+- `GET /admin/config/targets` — 读取 targets 快照（legacy 模式返回单条；fail-closed 降级 200 + targets=null）
+- `PUT /admin/config/targets` — 全量替换写 + 热重载（legacy 模式 → 409 `LEGACY_MODE`）
+- `GET /admin/config/env` — 读取 AI 连接设置（密钥只返回 `*_set` 布尔，永不返回值）
+- `PUT /admin/config/env` — 按行编辑 env 文件（保留注释 + 非 AI 行；无文件 → 409 `ENV_FILE_NOT_FOUND`）
+
+- `GET /admin/feishu/tables` — list bitables under a given app_token
+- `GET /admin/feishu/fields` — list field metadata for a table (type + is_primary)
+- `GET /admin/feishu/records` — paginate records, each with a `preview` (is_primary field value, truncated to 80 chars)
+- `POST /admin/feishu/parse-url` — parse a `/base/{app_token}?table={table_id}` direct link; wiki links → 422 `UNSUPPORTED_URL`
+- `GET /admin/config/profile` — read the editable profile shape (degrades 200 + profile=null when fail-closed)
+- `PUT /admin/config/profile` — validate + atomic save + hot reload (base_generation guard; concurrent → 409 `STALE_WRITE`)
+- `GET /admin/config/targets` — read the targets snapshot (legacy mode returns one; fail-closed degrades 200 + targets=null)
+- `PUT /admin/config/targets` — full-replace save + hot reload (legacy mode → 409 `LEGACY_MODE`)
+- `GET /admin/config/env` — read AI connection settings (secrets return only `*_set` booleans, never values)
+- `PUT /admin/config/env` — line-based env file edit (preserves comments + non-AI lines; no file → 409 `ENV_FILE_NOT_FOUND`)

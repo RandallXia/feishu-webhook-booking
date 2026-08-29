@@ -45,7 +45,7 @@ The Chinese versions are the default canonical docs in the repository root.
 
 ## AI extraction pipeline
 
-When `AI_ENABLED=true`, the service takes over Feishu's "AI auto-fill" after writing `原始信息`: a single structured AI call extracts bill fields from the OCR text, writes back `精简原始数据`, and creates a new record in the 账单明细 table. Quota is governed by your own AI provider, not Feishu's monthly cap.
+When `AI_ENABLED=true`, the service takes over Feishu's "AI auto-fill" after writing `原始信息`: a single structured AI call extracts bill fields from the OCR text, writes back `精简原始数据`, and creates a new record in the 账单明细 table. Quota is governed by your own AI provider, not Feishu's monthly cap. Configuration can be done via the web UI (`/admin/ai`); see section 12 of the [AI pipeline docs](ai-pipeline.md).
 
 See [ai-pipeline.md](ai-pipeline.md) for full config, migration checklist, TOML schema, and admin endpoints (Chinese: [../../docs/ai-pipeline.md](../ai-pipeline.md)).
 

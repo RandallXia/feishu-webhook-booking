@@ -329,3 +329,55 @@ After configuring, call `POST /admin/ai/test` once:
 
 - Returns `ai_status="succeeded"` → concatenation is correct
 - Returns `ai_status="failed"` with `error` containing `HTTP 404` → 99% chance the base URL is mis-concatenated
+
+## 12. Config UI
+
+Beyond the dry-run + manual reload in section 7, the `/admin/ai` page also provides visual editing of targets / profile / env. This section covers the UI's usage contracts and limits.
+
+### URL format
+
+Only **direct** bitable links are supported:
+
+```
+https://xxx.feishu.cn/base/{app_token}?table={table_id}&view=...
+```
+
+- `app_token`: the segment after `/base/` in the URL path
+- `table_id`: the value of the `table=` query parameter
+
+Copy from the browser address bar. **Wiki links are not supported** (the path has no `/base/`); pasting one yields `UNSUPPORTED_URL` — open the bitable itself and copy its address-bar URL.
+
+### Config flow
+
+1. Paste URL → `POST /admin/feishu/parse-url` extracts `app_token` + `table_id`
+2. Pick table → `GET /admin/feishu/tables` lists tables under the app
+3. Pick record → `GET /admin/feishu/records` paginates records (each with a `preview`)
+4. Field mapping → `GET /admin/feishu/fields` fetches field metadata; the UI auto-derives a prefill mapping
+5. Save → validate + atomic write (tmp + `os.replace`) + hot reload (registry.reload)
+
+### AI connection
+
+The UI can edit `AI_PROVIDER` / `AI_MODEL` / `AI_BASE_URL` / `AI_TIMEOUT_SECONDS` / `AI_API_KEY`. `AI_API_KEY` is **write-only**: GET ever returns only the `ai_api_key_set` boolean, never the key value.
+
+> ⚠️ **Restart required after save**: env is loaded into `Settings` (a frozen dataclass) at startup; PUT only edits the file, it does NOT refresh in-memory state. GET reflects the running `Settings`, not the just-written file — hence GET's `restart_required` is always `true`.
+
+### TOML comment loss
+
+A UI save **rewrites the whole TOML file** (via `app/toml_writer.py`'s deterministic serializer); hand-written comments are lost. A `.bak` backup (`<file>.toml.bak`) is auto-created before every save (holding the previous version). The `.example` templates are **never written** — different filename; the UI only writes `runtime/feishu-targets.toml` / `runtime/ai-profile.toml`.
+
+### Docker read-only mount
+
+When the `runtime/` volume is mounted read-only (`docker-compose.yml` defaults to `./runtime:/runtime:ro`), `os.replace` raises `PermissionError`, the save button returns `409 RUNTIME_READONLY`, and the UI shows a red banner prompting a host-side edit followed by `POST /admin/config/reload`. The original file is NOT corrupted (tmp + replace is an atomic swap; a failed replace leaves the original byte-identical).
+
+### New admin endpoints
+
+- `GET /admin/feishu/tables` — list bitables under a given app_token
+- `GET /admin/feishu/fields` — list field metadata for a table (type + is_primary)
+- `GET /admin/feishu/records` — paginate records, each with a `preview` (is_primary field value, truncated to 80 chars)
+- `POST /admin/feishu/parse-url` — parse a `/base/{app_token}?table={table_id}` direct link; wiki links → 422 `UNSUPPORTED_URL`
+- `GET /admin/config/profile` — read the editable profile shape (degrades 200 + profile=null when fail-closed)
+- `PUT /admin/config/profile` — validate + atomic save + hot reload (base_generation guard; concurrent → 409 `STALE_WRITE`)
+- `GET /admin/config/targets` — read the targets snapshot (legacy mode returns one; fail-closed degrades 200 + targets=null)
+- `PUT /admin/config/targets` — full-replace save + hot reload (legacy mode → 409 `LEGACY_MODE`)
+- `GET /admin/config/env` — read AI connection settings (secrets return only `*_set` booleans, never values)
+- `PUT /admin/config/env` — line-based env file edit (preserves comments + non-AI lines; no file → 409 `ENV_FILE_NOT_FOUND`)

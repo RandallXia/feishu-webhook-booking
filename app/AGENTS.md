@@ -1,22 +1,23 @@
 # app/ — FastAPI Service Package
 
-8 modules + `static/`, no `__init__.py` (implicit namespace package — keep relative imports `from .xxx import`). All logic is here; see root `AGENTS.md` for project-level map.
+9 modules + `static/`, no `__init__.py` (implicit namespace package — keep relative imports `from .xxx import`). All logic is here; see root `AGENTS.md` for project-level map.
 
-8 个模块 + `static/`，无 `__init__.py`（隐式命名空间包）。项目级信息见根目录 `AGENTS.md`。
+9 个模块 + `static/`，无 `__init__.py`（隐式命名空间包）。项目级信息见根目录 `AGENTS.md`。
 
 ## WHERE TO LOOK
 
 | File | Symbols | Purpose |
 |------|---------|---------|
-| `main.py` | `WebhookRequest`, `WebhookSuccessResponse`, `lifespan`, `app`, `ingest_ocr`, `reload_config`, `ai_test_dry_run`, `ai_profile_inspect` | 6 routes + error envelopes; single entry point; AI wiring |
-| `config.py` | `Settings`, `get_settings`, `_load_runtime_env_files` | Env parsing; **executes at import time** (env files loaded as module side effect, line 55) |
-| `feishu_client.py` | `FeishuClient`, `FeishuClientError`, `TokenCache` | Feishu Open API: tenant token + bitable record PUT/POST + list_fields |
-| `target_registry.py` | `TargetRegistry`, `FeishuTargetConfig`, `TargetRegistrySnapshot`, 4 error classes | TOML/env target resolution + hot reload |
+| `main.py` | `WebhookRequest`, `WebhookSuccessResponse`, `lifespan`, `app`, `ingest_ocr`, `reload_config`, `ai_test_dry_run`, `ai_profile_inspect`, 4 picker routes, 6 config routes (`config_profile_get/put`, `config_targets_get/put`, `config_env_get/put`) | 16 routes + error envelopes; single entry point; AI wiring |
+| `config.py` | `Settings`, `get_settings`, `_load_runtime_env_files`, `env_file_path` | Env parsing; **executes at import time** (env files loaded as module side effect, line 55) |
+| `feishu_client.py` | `FeishuClient`, `FeishuClientError`, `TokenCache` | Feishu Open API: tenant token + bitable record PUT/POST + list_fields/list_tables/list_records |
+| `target_registry.py` | `TargetRegistry`, `FeishuTargetConfig`, `TargetRegistrySnapshot`, 4 error classes, `validate_targets` | TOML/env target resolution + hot reload; PUT-side schema checks |
 | `ai_extractor.py` | `AiExtractor`, `ExtractionResult`, `AiExtractorError` | Dual-protocol (anthropic/openai) structured extraction; prompt-stateless; forced tool_call |
 | `field_codec.py` | `FieldSpec`, `encode_fields` | ExtractionResult → Feishu field dicts; whitelist-guarded single_select; Asia/Shanghai date |
-| `ai_profile.py` | `AiProfile`, `parse_profile`, `AiProfileRegistry`, `AiProfileSnapshot`, `ProfileConfigError`, `AiProfileRegistryUnavailableError` | TOML profile parser + async hot-reload registry + pre-loaded whitelist snapshot |
+| `ai_profile.py` | `AiProfile`, `parse_profile`, `parse_profile_text`, `validate_profile_candidate`, `build_field_prompts`, `AiProfileRegistry`, `AiProfileSnapshot`, `ProfileConfigError`, `AiProfileRegistryUnavailableError` | TOML profile parser + async hot-reload registry + pre-loaded whitelist snapshot + PUT-side validation |
 | `pipeline.py` | `AiPipeline`, `PipelineResult` | AI orchestration: extract → encode → writeback → create; `run()` never raises |
-| `static/admin.html` | — | AI config page served at `GET /admin/ai` (no auth on page; JS calls need `X-Admin-Token`) |
+| `toml_writer.py` | `dump_targets`, `dump_profile` | Deterministic TOML serialization for config UI saves (comment-loss expected; `.bak` pre-save) |
+| `static/admin.html` + `admin.js` + `admin.css` | — | AI config page served at `GET /admin/ai` (no auth on page; JS calls need `X-Admin-Token`) |
 
 ## Request Flow (ingest_ocr)
 
@@ -55,6 +56,17 @@ if settings.ai_enabled and ai_pipeline is not None and ai_registry is not None:
 | `AiExtractorError` | — (200) | internalized by `AiPipeline.run` → `ai_status="failed"` (original text already written; never 5xx) |
 | `AiProfileRegistryUnavailableError` | 503 | `AI_PROFILE_UNAVAILABLE` (fail-closed registry; prevents single_select option pollution) |
 | bare `Exception` | 500 | `INTERNAL_ERROR` (the `# noqa: BLE001` at main.py:200 is deliberate catch-all) |
+
+Config-UI route-level error codes (raised as `HTTPException` directly, not via exceptions; all bodies carry `request_id` + `error.code`/`error.message`):
+
+| HTTP | Code | Route | Trigger |
+|------|------|-------|---------|
+| 404 | `AI_DISABLED` | config profile/targets GET+PUT, ai/test | `AI_ENABLED=false` or registry missing |
+| 409 | `RUNTIME_READONLY` | config profile/targets/env PUT | `os.replace` raises `PermissionError` (Docker `:ro`); `suggested_action="host-edit"` |
+| 409 | `STALE_WRITE` | config profile/targets PUT | `base_generation` != registry's current generation (optimistic-concurrency guard) |
+| 409 | `LEGACY_MODE` | config targets PUT | `FEISHU_TARGETS_FILE` unset (legacy single-target mode) |
+| 409 | `ENV_FILE_NOT_FOUND` | config env PUT | `settings.env_file_path is None` (env set directly, no file) |
+| 422 | `UNSUPPORTED_URL` | `/admin/feishu/parse-url` | URL not a `/base/{app_token}?table={table_id}` direct link (e.g. wiki link) |
 
 New failure paths: extend `stage` on `FeishuClientError`, don't invent new response shapes. All error bodies carry `request_id` + `error.code`/`error.message`. The AI pipeline's `AiPipeline.run()` catches `Exception` itself and returns `PipelineResult(ai_status="failed")`, so the only AI-originated 5xx path is `AiProfileRegistryUnavailableError` raised by `get_snapshot()` in the route (before `pipeline.run` is called).
 
