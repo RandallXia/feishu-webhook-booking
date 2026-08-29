@@ -399,7 +399,462 @@
     }
   });
 
+  // ===========================================================================
+  // Extract-table config UI (todo 9 — §extract-section)
+  //
+  // Data flow: GET /admin/config/targets → render alias cards → user edits →
+  // PUT /admin/config/targets. All dynamic text is assigned via textContent
+  // (el() or node.textContent); innerHTML is never used for server data.
+  // ===========================================================================
+
+  var extractSection = document.getElementById('extract-section');
+  var targetsList = document.getElementById('targets-list');
+  var saveTargetsBtn = document.getElementById('save-targets-btn');
+  var addAliasBtn = document.getElementById('add-alias-btn');
+  var extractBanner = document.getElementById('extract-banner');
+  var extractBaseGeneration = 0;
+  var extractDefaultAlias = '';
+  // Cap record-picker pagination so a huge table cannot stall the browser.
+  var RECORD_PICKER_MAX_PAGES = 5;
+
+  // Parse a validation error path into a card locator. Returns:
+  //   {defaultAlias: true}                for path "default_alias"
+  //   {cardIndex: <int>, field: <string>} for path "targets[i].<field>"
+  //   {cardIndex: <int>}                  for path "targets[i]"
+  //   null                                 for unrecognized shapes
+  function parseErrorPath(path) {
+    if (typeof path !== 'string') return null;
+    if (path === 'default_alias') return { defaultAlias: true };
+    var m = path.match(/^targets\[(\d+)\](?:\.(\w+))?$/);
+    if (!m) return null;
+    var loc = { cardIndex: parseInt(m[1], 10) };
+    if (m[2]) loc.field = m[2];
+    return loc;
+  }
+
+  // POST /admin/feishu/parse-url. On success fills the card's app_token +
+  // table_id readonly inputs and marks the row OK. On 422 shows the server
+  // message in red. Never throws.
+  function parseUrl(urlInput, cardEl) {
+    var url = urlInput.value.trim();
+    if (!url) {
+      showError(cardEl.querySelector('.parse-status'), '请输入 URL / Please enter a URL');
+      return;
+    }
+    var status = cardEl.querySelector('.parse-status');
+    while (status.firstChild) status.removeChild(status.firstChild);
+    status.appendChild(el('span', { className: 'placeholder' }, '解析中 / Parsing...'));
+
+    api('/admin/feishu/parse-url', {
+      method: 'POST',
+      body: JSON.stringify({ url: url }),
+    }).then(function(parsed) {
+      var appInput = cardEl.querySelector('.app-token-input');
+      var tblInput = cardEl.querySelector('.table-id-input');
+      appInput.value = parsed.app_token || '';
+      tblInput.value = parsed.table_id || '';
+      while (status.firstChild) status.removeChild(status.firstChild);
+      status.appendChild(el('span', { className: 'status-tag status-ok' }, '✓ ' + (parsed.app_token || '')));
+      var sel = cardEl.querySelector('.table-select');
+      if (sel) selectTableOption(sel, parsed.table_id);
+    }).catch(function(err) {
+      while (status.firstChild) status.removeChild(status.firstChild);
+      var msg = '解析失败 / Parse failed';
+      if (err && err.status === 422 && err.body && err.body.detail && err.body.detail.error) {
+        msg = err.body.detail.error.message || msg;
+      } else if (err && err.message) {
+        msg = err.message;
+      }
+      status.appendChild(el('span', { className: 'status-tag status-err' }, msg));
+    });
+  }
+
+  function selectTableOption(sel, tableId) {
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === tableId) {
+        sel.selectedIndex = i;
+        return;
+      }
+    }
+  }
+
+  // GET /admin/feishu/tables → populate the card's table <select>. Each option
+  // label is the table name (textContent); value is the table_id.
+  function loadTables(btn, cardEl) {
+    var appToken = cardEl.querySelector('.app-token-input').value.trim();
+    if (!appToken) {
+      showError(cardEl.querySelector('.table-status'), '请先解析或填写 app_token / Parse or enter app_token first');
+      return;
+    }
+    btn.disabled = true;
+    var sel = cardEl.querySelector('.table-select');
+    while (sel.firstChild) sel.removeChild(sel.firstChild);
+    sel.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+
+    api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      sel.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
+      var tables = data.tables || [];
+      for (var i = 0; i < tables.length; i++) {
+        var t = tables[i];
+        sel.appendChild(el('option', { value: t.table_id }, t.name || t.table_id));
+      }
+      var currentTbl = cardEl.querySelector('.table-id-input').value.trim();
+      if (currentTbl) selectTableOption(sel, currentTbl);
+    }).catch(function(err) {
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      sel.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
+      showError(cardEl.querySelector('.table-status'), err.message || '加载表列表失败');
+    }).then(function() {
+      btn.disabled = false;
+    });
+  }
+
+  // GET /admin/feishu/records → render a clickable record list inside
+  // recordContainer. Clicking a record fills recordInput (readonly) and
+  // highlights the row. has_more + next_page_token drive a "load more" button,
+  // capped at RECORD_PICKER_MAX_PAGES.
+  function renderRecordPicker(recordContainer, appToken, tableId, recordInput, pageState) {
+    pageState = pageState || { page: 0, nextPageToken: null };
+    if (pageState.page === 0) {
+      while (recordContainer.firstChild) recordContainer.removeChild(recordContainer.firstChild);
+    }
+
+    var pageToken = pageState.page === 0 ? null : pageState.nextPageToken;
+    var qs = 'app_token=' + encodeURIComponent(appToken) + '&table_id=' + encodeURIComponent(tableId);
+    if (pageToken) qs += '&page_token=' + encodeURIComponent(pageToken);
+
+    var loading = el('p', { className: 'placeholder' }, '加载中 / Loading...');
+    recordContainer.appendChild(loading);
+
+    api('/admin/feishu/records?' + qs).then(function(data) {
+      recordContainer.removeChild(loading);
+      var items = data.items || [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var row = el('div', { className: 'record-row', 'data-record-id': item.record_id }, item.preview || item.record_id);
+        row.style.padding = '4px 8px';
+        row.style.borderRadius = '4px';
+        row.style.cursor = 'pointer';
+        if (recordInput.value === item.record_id) row.style.background = '#e3f2fd';
+        row.addEventListener('click', function(recId, rowEl) {
+          return function() {
+            recordInput.value = recId;
+            var rows = recordContainer.querySelectorAll('.record-row');
+            for (var j = 0; j < rows.length; j++) rows[j].style.background = '';
+            rowEl.style.background = '#e3f2fd';
+          };
+        }(item.record_id, row));
+        recordContainer.appendChild(row);
+      }
+
+      if (data.has_more && data.next_page_token) {
+        pageState.page += 1;
+        if (pageState.page >= RECORD_PICKER_MAX_PAGES) {
+          recordContainer.appendChild(el('p', { className: 'placeholder' },
+            '已达翻页上限 (' + RECORD_PICKER_MAX_PAGES + ' 页) / Page limit reached'));
+          return;
+        }
+        pageState.nextPageToken = data.next_page_token;
+        var moreBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载更多 / Load More');
+        moreBtn.style.marginTop = '6px';
+        moreBtn.addEventListener('click', function() {
+          recordContainer.removeChild(moreBtn);
+          renderRecordPicker(recordContainer, appToken, tableId, recordInput, pageState);
+        });
+        recordContainer.appendChild(moreBtn);
+      } else if (items.length === 0 && pageState.page === 0) {
+        recordContainer.appendChild(el('p', { className: 'placeholder' }, '无记录 / No records'));
+      }
+    }).catch(function(err) {
+      recordContainer.removeChild(loading);
+      recordContainer.appendChild(el('p', { className: 'status-tag status-err' }, err.message || '加载记录失败'));
+    });
+  }
+
+  // Build one alias card. target is the GET shape {alias, year, app_token,
+  // table_id, record_id, original_field_name, enabled}; canDelete is false for
+  // the default_alias card (server requires the default to exist).
+  function renderAliasCard(target, defaultAlias, canDelete) {
+    target = target || {};
+    var card = el('div', { className: 'card', 'data-alias': target.alias || '' });
+
+    card.appendChild(el('div', { className: 'card-title' }, target.alias || '新账本 / New Alias'));
+
+    var urlGroup = el('div', { className: 'form-group' });
+    urlGroup.appendChild(el('label', null, '飞书表 URL / Feishu Table URL'));
+    var urlInput = el('input', { type: 'text', className: 'url-input', placeholder: 'https://xxx.feishu.cn/base/{app_token}?table={table_id}' });
+    if (target.app_token && target.table_id) {
+      urlInput.value = 'https://feishu.cn/base/' + target.app_token + '?table=' + target.table_id;
+    }
+    urlGroup.appendChild(urlInput);
+    var parseBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '解析 URL / Parse');
+    parseBtn.style.marginTop = '4px';
+    urlGroup.appendChild(parseBtn);
+    var parseStatus = el('div', { className: 'parse-status' });
+    urlGroup.appendChild(parseStatus);
+    card.appendChild(urlGroup);
+    parseBtn.addEventListener('click', function() { parseUrl(urlInput, card); });
+
+    var appGroup = el('div', { className: 'form-group' });
+    appGroup.appendChild(el('label', null, 'app_token'));
+    var appInput = el('input', { type: 'text', className: 'app-token-input', readonly: 'readonly' });
+    appInput.value = target.app_token || '';
+    appGroup.appendChild(appInput);
+    card.appendChild(appGroup);
+
+    var tblGroup = el('div', { className: 'form-group' });
+    tblGroup.appendChild(el('label', null, '表 / Table'));
+    var tblSel = el('select', { className: 'table-select' });
+    tblSel.appendChild(el('option', { value: '' }, target.table_id ? target.table_id : '— 选择表 / Select table —'));
+    if (target.table_id) {
+      tblSel.firstChild.textContent = target.table_id;
+      tblSel.firstChild.value = target.table_id;
+    }
+    tblGroup.appendChild(tblSel);
+    var loadTblBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载表列表 / Load Tables');
+    loadTblBtn.style.marginTop = '4px';
+    tblGroup.appendChild(loadTblBtn);
+    var tableStatus = el('div', { className: 'table-status' });
+    tblGroup.appendChild(tableStatus);
+    card.appendChild(tblGroup);
+    loadTblBtn.addEventListener('click', function() { loadTables(loadTblBtn, card); });
+    tblSel.addEventListener('change', function() {
+      var tblInput = card.querySelector('.table-id-input');
+      if (tblInput) tblInput.value = tblSel.value;
+    });
+
+    var tblIdGroup = el('div', { className: 'form-group' });
+    tblIdGroup.appendChild(el('label', null, 'table_id'));
+    var tblIdInput = el('input', { type: 'text', className: 'table-id-input', readonly: 'readonly' });
+    tblIdInput.value = target.table_id || '';
+    tblIdGroup.appendChild(tblIdInput);
+    card.appendChild(tblIdGroup);
+
+    var recGroup = el('div', { className: 'form-group' });
+    recGroup.appendChild(el('label', null, '记录 / Record'));
+    var recInput = el('input', { type: 'text', className: 'record-id-input', readonly: 'readonly', placeholder: '点击下方记录选中 / Click a record below' });
+    recInput.value = target.record_id || '';
+    recGroup.appendChild(recInput);
+    var loadRecBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载记录 / Load Records');
+    loadRecBtn.style.marginTop = '4px';
+    var recList = el('div', { className: 'record-list' });
+    recList.style.marginTop = '6px';
+    recList.style.maxHeight = '240px';
+    recList.style.overflowY = 'auto';
+    recGroup.appendChild(loadRecBtn);
+    recGroup.appendChild(recList);
+    card.appendChild(recGroup);
+    var recPageState = { page: 0, nextPageToken: null };
+    loadRecBtn.addEventListener('click', function() {
+      var appToken = card.querySelector('.app-token-input').value.trim();
+      var tableId = card.querySelector('.table-id-input').value.trim();
+      if (!appToken || !tableId) {
+        showError(recList, '请先填写 app_token 与 table_id / Enter app_token + table_id first');
+        return;
+      }
+      recPageState = { page: 0, nextPageToken: null };
+      renderRecordPicker(recList, appToken, tableId, recInput, recPageState);
+    });
+
+    var aliasGroup = el('div', { className: 'form-group' });
+    aliasGroup.appendChild(el('label', null, 'alias'));
+    var aliasInput = el('input', { type: 'text', className: 'alias-input' });
+    aliasInput.value = target.alias || '';
+    aliasGroup.appendChild(aliasInput);
+    card.appendChild(aliasGroup);
+
+    var yearGroup = el('div', { className: 'form-group' });
+    yearGroup.appendChild(el('label', null, 'year (可空 / optional)'));
+    var yearInput = el('input', { type: 'text', className: 'year-input', placeholder: '如 2026，可留空 / e.g. 2026, optional' });
+    yearInput.value = target.year != null ? String(target.year) : '';
+    yearGroup.appendChild(yearInput);
+    card.appendChild(yearGroup);
+
+    var ofnGroup = el('div', { className: 'form-group' });
+    ofnGroup.appendChild(el('label', null, 'original_field_name'));
+    var ofnInput = el('input', { type: 'text', className: 'ofn-input' });
+    ofnInput.value = target.original_field_name || '原始信息';
+    ofnGroup.appendChild(ofnInput);
+    card.appendChild(ofnGroup);
+
+    var enGroup = el('div', { className: 'form-group' });
+    var enLabel = el('label');
+    var enCheckbox = el('input', { type: 'checkbox', className: 'enabled-input' });
+    enCheckbox.checked = target.enabled !== false;
+    enLabel.appendChild(enCheckbox);
+    enLabel.appendChild(document.createTextNode(' enabled'));
+    enGroup.appendChild(enLabel);
+    card.appendChild(enGroup);
+
+    if (canDelete) {
+      var delBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '删除 / Delete');
+      delBtn.style.marginTop = '8px';
+      delBtn.addEventListener('click', function() {
+        if (targetsList) targetsList.removeChild(card);
+      });
+      card.appendChild(delBtn);
+    } else {
+      var notice = el('p', { className: 'placeholder' }, '默认账本不可删除 / Default alias cannot be deleted');
+      notice.style.marginTop = '8px';
+      card.appendChild(notice);
+    }
+
+    return card;
+  }
+
+  function gatherTargetsFromBody() {
+    var cards = targetsList.querySelectorAll('.card');
+    var targets = [];
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i];
+      var yearRaw = c.querySelector('.year-input').value.trim();
+      var year = null;
+      if (yearRaw) {
+        var yearInt = parseInt(yearRaw, 10);
+        if (!isNaN(yearInt) && yearInt > 0) year = yearInt;
+      }
+      targets.push({
+        alias: c.querySelector('.alias-input').value.trim(),
+        year: year,
+        app_token: c.querySelector('.app-token-input').value.trim(),
+        table_id: c.querySelector('.table-id-input').value.trim(),
+        record_id: c.querySelector('.record-id-input').value.trim(),
+        original_field_name: c.querySelector('.ofn-input').value.trim() || '原始信息',
+        enabled: c.querySelector('.enabled-input').checked,
+      });
+    }
+    return {
+      default_alias: extractDefaultAlias,
+      targets: targets,
+      base_generation: extractBaseGeneration,
+    };
+  }
+
+  function clearCardErrors() {
+    var marked = targetsList.querySelectorAll('.field-error');
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].classList.remove('field-error');
+      marked[i].style.borderColor = '';
+    }
+  }
+
+  function markFieldError(cardIndex, field) {
+    var cards = targetsList.querySelectorAll('.card');
+    if (cardIndex >= cards.length) return;
+    var card = cards[cardIndex];
+    var sel = '.' + field + '-input';
+    var fieldMap = {
+      alias: 'alias', year: 'year', app_token: 'app-token',
+      table_id: 'table-id', record_id: 'record-id',
+      original_field_name: 'ofn', enabled: 'enabled',
+    };
+    var cls = fieldMap[field] || field;
+    var input = card.querySelector('.' + cls + '-input');
+    if (input) {
+      input.classList.add('field-error');
+      input.style.borderColor = '#c62828';
+    }
+  }
+
+  function loadExtractTargets() {
+    if (!targetsList) return;
+    while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
+    targetsList.appendChild(el('p', { className: 'placeholder' }, '加载中 / Loading...'));
+
+    api('/admin/config/targets').then(function(data) {
+      while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
+      if (data.targets == null) {
+        var msg = '配置无效或旧版模式 / Config invalid or legacy mode';
+        if (data.last_reload_error) msg = data.last_reload_error;
+        if (data.mode === 'legacy') msg = '旧版单目标模式不支持 UI 编辑 / Legacy mode — UI editing unavailable';
+        targetsList.appendChild(el('p', { className: 'status-tag status-warn' }, msg));
+        return;
+      }
+      extractBaseGeneration = data.generation || 0;
+      extractDefaultAlias = data.default_alias || '';
+      var targets = data.targets || [];
+      for (var i = 0; i < targets.length; i++) {
+        var t = targets[i];
+        var canDelete = t.alias !== extractDefaultAlias;
+        targetsList.appendChild(renderAliasCard(t, extractDefaultAlias, canDelete));
+      }
+      if (targets.length === 0) {
+        targetsList.appendChild(el('p', { className: 'placeholder' }, '无账本，点击"新增账本" / No aliases — click "Add Alias"'));
+      }
+    }).catch(function(err) {
+      while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
+      var msg = '加载失败 / Load failed';
+      if (err && err.status === 404) msg = '管理端点未启用 / Admin endpoints disabled';
+      else if (err && err.message) msg = err.message;
+      targetsList.appendChild(el('p', { className: 'status-tag status-err' }, msg));
+    });
+  }
+
+  if (saveTargetsBtn) saveTargetsBtn.addEventListener('click', function() {
+    if (!extractBanner) return;
+    var body = gatherTargetsFromBody();
+    clearCardErrors();
+
+    api('/admin/config/targets', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }).then(function(resp) {
+      extractBaseGeneration = resp.generation || extractBaseGeneration;
+      showBanner(extractBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
+      refreshStatus();
+      loadExtractTargets();
+    }).catch(function(err) {
+      var status = err && err.status;
+      var detail = err && err.body && err.body.detail;
+      if (status === 422 && detail && detail.errors) {
+        var errors = detail.errors;
+        for (var i = 0; i < errors.length; i++) {
+          var loc = parseErrorPath(errors[i].path);
+          if (!loc) continue;
+          if (loc.defaultAlias) {
+            showBanner(extractBanner, 'err', errors[i].message);
+            continue;
+          }
+          if (loc.field) markFieldError(loc.cardIndex, loc.field);
+        }
+        if (!extractBanner.firstChild) {
+          showBanner(extractBanner, 'err', '校验失败，请检查标红字段 / Validation failed — check highlighted fields');
+        }
+        return;
+      }
+      if (status === 409 && detail && detail.error) {
+        var code = detail.error.code;
+        if (code === 'STALE_WRITE') {
+          showBanner(extractBanner, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+          loadExtractTargets();
+          return;
+        }
+        if (code === 'LEGACY_MODE' || code === 'RUNTIME_READONLY') {
+          showBanner(extractBanner, 'err', detail.error.message || code);
+          return;
+        }
+      }
+      var msg = '保存失败 / Save failed';
+      if (detail && detail.error && detail.error.message) msg = detail.error.message;
+      else if (err && err.message) msg = err.message;
+      showBanner(extractBanner, 'err', msg);
+    });
+  });
+
+  if (addAliasBtn) addAliasBtn.addEventListener('click', function() {
+    if (!targetsList) return;
+    var ph = targetsList.querySelector('.placeholder');
+    if (ph && targetsList.children.length === 1) targetsList.removeChild(ph);
+    var emptyTarget = {
+      alias: '', year: null, app_token: '', table_id: '',
+      record_id: '', original_field_name: '原始信息', enabled: true,
+    };
+    targetsList.appendChild(renderAliasCard(emptyTarget, extractDefaultAlias, true));
+  });
+
   // --- Init ---
   loadToken();
   refreshStatus();
+  loadExtractTargets();
 })();
