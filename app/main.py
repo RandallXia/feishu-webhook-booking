@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -118,6 +119,16 @@ logger = logging.getLogger("feishu_webhook_service")
 async def admin_ai_page() -> HTMLResponse:
     html_path = Path(__file__).parent / "static" / "admin.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+# Static assets for the admin page (admin.css / admin.js). Mounted at a
+# distinct prefix from the page route so there is no path shadowing: the page
+# is served at the exact path /admin/ai; assets live under /admin/ai/assets/.
+app.mount(
+    "/admin/ai/assets",
+    StaticFiles(directory=Path(__file__).parent / "static"),
+    name="admin-assets",
+)
 
 
 @app.get("/health")
