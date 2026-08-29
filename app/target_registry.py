@@ -42,6 +42,99 @@ class FeishuTargetConfig:
     enabled: bool
 
 
+def validate_targets(
+    data: dict, *, original_field_name_default: str
+) -> tuple[dict[str, FeishuTargetConfig], dict[int, str], str]:
+    """Parse a targets dict (shape: tomllib.loads output) into registry structures.
+
+    Pure module-level helper extracted from TargetRegistry._build_dynamic_snapshot
+    so the admin PUT endpoint can validate a body with the same rules. The registry
+    delegates here (zero behavior change — same exceptions, same ordering).
+
+    Args:
+        data: dict with ``default_alias`` (str) and ``targets`` (dict[alias, dict]).
+        original_field_name_default: fallback for missing ``original_field_name``
+            (matches Settings.feishu_original_field_name).
+
+    Returns:
+        (targets_by_alias, aliases_by_year, default_alias)
+
+    Raises:
+        TargetRegistryConfigError on any schema violation (missing default_alias,
+        empty targets, bad alias regex, duplicate year, default_alias not in
+        targets, default disabled, missing required string fields, bad year).
+    """
+    default_alias = str(data.get("default_alias", "")).strip()
+    if not default_alias:
+        raise TargetRegistryConfigError("targets registry must define default_alias")
+
+    raw_targets = data.get("targets")
+    if not isinstance(raw_targets, dict) or not raw_targets:
+        raise TargetRegistryConfigError("targets registry must define at least one target")
+
+    targets_by_alias: dict[str, FeishuTargetConfig] = {}
+    aliases_by_year: dict[int, str] = {}
+    for alias, raw_target in raw_targets.items():
+        target = _parse_target(alias, raw_target, original_field_name_default)
+        targets_by_alias[target.alias] = target
+        if target.year is not None:
+            if target.year in aliases_by_year:
+                raise TargetRegistryConfigError(f"duplicate target year: {target.year}")
+            aliases_by_year[target.year] = target.alias
+
+    default_target = targets_by_alias.get(default_alias)
+    if default_target is None:
+        raise TargetRegistryConfigError("default_alias does not exist in targets registry")
+    if not default_target.enabled:
+        raise TargetRegistryConfigError("default_alias target must be enabled")
+
+    return targets_by_alias, aliases_by_year, default_alias
+
+
+def _parse_target(
+    alias: object, raw_target: object, original_field_name_default: str
+) -> FeishuTargetConfig:
+    if not isinstance(alias, str) or not _ALIAS_PATTERN.match(alias):
+        raise TargetRegistryConfigError(f"invalid target alias: {alias!r}")
+    if not isinstance(raw_target, dict):
+        raise TargetRegistryConfigError(f"target {alias} must be an object")
+
+    app_token = _required_target_value(alias, raw_target, "app_token")
+    table_id = _required_target_value(alias, raw_target, "table_id")
+    record_id = _required_target_value(alias, raw_target, "record_id")
+    original_field_name = str(
+        raw_target.get("original_field_name", original_field_name_default)
+    ).strip()
+    enabled = bool(raw_target.get("enabled", True))
+
+    year_raw = raw_target.get("year")
+    if year_raw is None:
+        year = None
+    elif isinstance(year_raw, int) and year_raw > 0:
+        year = year_raw
+    else:
+        raise TargetRegistryConfigError(f"target {alias} has invalid year")
+
+    return FeishuTargetConfig(
+        alias=alias,
+        year=year,
+        app_token=app_token,
+        table_id=table_id,
+        record_id=record_id,
+        original_field_name=original_field_name or original_field_name_default,
+        enabled=enabled,
+    )
+
+
+def _required_target_value(
+    alias: str, raw_target: dict[str, object], field_name: str
+) -> str:
+    value = raw_target.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise TargetRegistryConfigError(f"target {alias} is missing {field_name}")
+    return value.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class TargetRegistrySnapshot:
     mode: str
@@ -204,29 +297,9 @@ class TargetRegistry:
             raise TargetRegistryConfigError(f"Missing targets registry file: {targets_file}")
 
         data = tomllib.loads(targets_file.read_text(encoding="utf-8"))
-        default_alias = str(data.get("default_alias", "")).strip()
-        if not default_alias:
-            raise TargetRegistryConfigError("targets registry must define default_alias")
-
-        raw_targets = data.get("targets")
-        if not isinstance(raw_targets, dict) or not raw_targets:
-            raise TargetRegistryConfigError("targets registry must define at least one target")
-
-        targets_by_alias: dict[str, FeishuTargetConfig] = {}
-        aliases_by_year: dict[int, str] = {}
-        for alias, raw_target in raw_targets.items():
-            target = self._parse_target(alias, raw_target)
-            targets_by_alias[target.alias] = target
-            if target.year is not None:
-                if target.year in aliases_by_year:
-                    raise TargetRegistryConfigError(f"duplicate target year: {target.year}")
-                aliases_by_year[target.year] = target.alias
-
-        default_target = targets_by_alias.get(default_alias)
-        if default_target is None:
-            raise TargetRegistryConfigError("default_alias does not exist in targets registry")
-        if not default_target.enabled:
-            raise TargetRegistryConfigError("default_alias target must be enabled")
+        targets_by_alias, aliases_by_year, default_alias = validate_targets(
+            data, original_field_name_default=self._settings.feishu_original_field_name
+        )
 
         self._generation += 1
         return TargetRegistrySnapshot(
@@ -239,42 +312,6 @@ class TargetRegistry:
             source_mtime=targets_file.stat().st_mtime,
             generation=self._generation,
         )
-
-    def _parse_target(self, alias: object, raw_target: object) -> FeishuTargetConfig:
-        if not isinstance(alias, str) or not _ALIAS_PATTERN.match(alias):
-            raise TargetRegistryConfigError(f"invalid target alias: {alias!r}")
-        if not isinstance(raw_target, dict):
-            raise TargetRegistryConfigError(f"target {alias} must be an object")
-
-        app_token = self._required_target_value(alias, raw_target, "app_token")
-        table_id = self._required_target_value(alias, raw_target, "table_id")
-        record_id = self._required_target_value(alias, raw_target, "record_id")
-        original_field_name = str(raw_target.get("original_field_name", self._settings.feishu_original_field_name)).strip()
-        enabled = bool(raw_target.get("enabled", True))
-
-        year_raw = raw_target.get("year")
-        if year_raw is None:
-            year = None
-        elif isinstance(year_raw, int) and year_raw > 0:
-            year = year_raw
-        else:
-            raise TargetRegistryConfigError(f"target {alias} has invalid year")
-
-        return FeishuTargetConfig(
-            alias=alias,
-            year=year,
-            app_token=app_token,
-            table_id=table_id,
-            record_id=record_id,
-            original_field_name=original_field_name or self._settings.feishu_original_field_name,
-            enabled=enabled,
-        )
-
-    def _required_target_value(self, alias: str, raw_target: dict[str, object], field_name: str) -> str:
-        value = raw_target.get(field_name)
-        if not isinstance(value, str) or not value.strip():
-            raise TargetRegistryConfigError(f"target {alias} is missing {field_name}")
-        return value.strip()
 
     def _stat_targets_file(self) -> float:
         targets_file = self._settings.feishu_targets_file

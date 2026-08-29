@@ -28,8 +28,16 @@ from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import FieldSpec, encode_fields
 from .pipeline import AiPipeline, PipelineResult
-from .target_registry import TargetRegistry, TargetRegistryError, TargetRegistryUnavailableError, TargetSelectorError
-from .toml_writer import dump_profile
+from .target_registry import (
+    FeishuTargetConfig,
+    TargetRegistry,
+    TargetRegistryConfigError,
+    TargetRegistryError,
+    TargetRegistryUnavailableError,
+    TargetSelectorError,
+    validate_targets,
+)
+from .toml_writer import dump_profile, dump_targets
 
 
 class WebhookRequest(BaseModel):
@@ -1143,4 +1151,353 @@ async def config_profile_put(
         "success": True,
         "generation": new_status.get("generation", 0),
         "warnings": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Admin config targets read/write (frontend config UI support)
+#
+# GET /admin/config/targets  : registry snapshot (degrades 200 on fail-closed;
+#                              legacy mode returns the single legacy target)
+# PUT /admin/config/targets  : validate → atomic save (tmp + os.replace) → reload
+#
+# PUT is full-replace: the body's targets list wholly replaces the file. Legacy
+# mode (FEISHU_TARGETS_FILE unset) → 409 LEGACY_MODE (UI editing not supported).
+# Auth mirrors reload_config (X-Admin-Token + compare_digest; CONFIG_RELOAD_TOKEN
+# unset → 404 RELOAD_DISABLED). PUT serializes via a module-level asyncio.Lock
+# (distinct from _profile_write_lock — two files, independent) + generation guard
+# (STALE_WRITE 409). The webhook contract is unchanged.
+# ---------------------------------------------------------------------------
+
+# Module-level write mutex — one in-flight targets save at a time. Distinct from
+# _profile_write_lock (the two files are independent; no reason for one edit to
+# block the other).
+_targets_write_lock = asyncio.Lock()
+
+# Alias regex mirrored from target_registry._ALIAS_PATTERN — duplicated here so
+# the PUT endpoint can attribute errors to targets[i].alias without importing a
+# private. Kept in sync by test_config_targets_api.py (regex parity locked).
+_TARGETS_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+# Required string fields per target — used for collect-all path attribution.
+_TARGETS_REQUIRED_STR_FIELDS = ("app_token", "table_id", "record_id")
+
+
+def _collect_target_errors(
+    body_targets: list, default_alias: object, *, original_field_name_default: str
+) -> list[dict[str, str]]:
+    """Collect-all validation for the PUT /admin/config/targets body.
+
+    Mirrors app.target_registry.validate_targets rules but returns a list of
+    ``{"path": str, "message": str}`` entries instead of raising. Errors are
+    attributed to ``targets[i].<field>`` (per-target) or ``default_alias``
+    (top-level) so the UI can highlight the offending input.
+
+    Does NOT short-circuit: a target with a bad alias AND a missing app_token
+    surfaces both errors. Duplicate years are attributed to the second
+    occurrence (targets[j].year).
+    """
+    errors: list[dict[str, str]] = []
+
+    # default_alias: must be a non-empty string present in the targets list.
+    if not isinstance(default_alias, str) or not default_alias.strip():
+        errors.append({"path": "default_alias", "message": "default_alias must be a non-empty string"})
+        default_alias_clean = ""
+    else:
+        default_alias_clean = default_alias.strip()
+
+    aliases_seen: dict[str, int] = {}
+    years_seen: dict[int, int] = {}
+    valid_targets: dict[str, dict] = {}
+
+    for i, raw in enumerate(body_targets):
+        if not isinstance(raw, dict):
+            errors.append({"path": f"targets[{i}]", "message": "target must be an object"})
+            continue
+
+        # alias
+        alias = raw.get("alias")
+        if not isinstance(alias, str) or not _TARGETS_ALIAS_RE.match(alias):
+            errors.append({"path": f"targets[{i}].alias", "message": f"invalid target alias: {alias!r}"})
+            alias = None
+        elif alias in aliases_seen:
+            errors.append({
+                "path": f"targets[{i}].alias",
+                "message": f"duplicate target alias: {alias}",
+            })
+            alias = None
+        else:
+            aliases_seen[alias] = i
+
+        # Required string fields
+        for field_name in _TARGETS_REQUIRED_STR_FIELDS:
+            val = raw.get(field_name)
+            if not isinstance(val, str) or not val.strip():
+                errors.append({
+                    "path": f"targets[{i}].{field_name}",
+                    "message": f"target {alias or i} is missing {field_name}",
+                })
+
+        # year: None OK; int>0 OK; else error
+        year_raw = raw.get("year")
+        year: int | None = None
+        if year_raw is None:
+            year = None
+        elif isinstance(year_raw, int) and year_raw > 0:
+            year = year_raw
+            if year in years_seen:
+                errors.append({
+                    "path": f"targets[{i}].year",
+                    "message": f"duplicate target year: {year}",
+                })
+            else:
+                years_seen[year] = i
+        else:
+            errors.append({
+                "path": f"targets[{i}].year",
+                "message": f"target {alias or i} has invalid year",
+            })
+
+        # original_field_name: optional, falls back to default; must be a string if present
+        ofn = raw.get("original_field_name", original_field_name_default)
+        if not isinstance(ofn, str):
+            errors.append({
+                "path": f"targets[{i}].original_field_name",
+                "message": f"target {alias or i} has invalid original_field_name",
+            })
+
+        # enabled: optional, defaults True; must be bool if present
+        enabled_raw = raw.get("enabled", True)
+        if not isinstance(enabled_raw, bool):
+            errors.append({
+                "path": f"targets[{i}].enabled",
+                "message": f"target {alias or i} has invalid enabled (must be bool)",
+            })
+
+        if alias is not None:
+            valid_targets[alias] = raw
+
+    # default_alias must exist in targets AND be enabled (only check if we got
+    # past the string check — avoids a redundant error when default_alias itself
+    # was malformed).
+    if default_alias_clean:
+        default_target = valid_targets.get(default_alias_clean)
+        if default_target is None:
+            errors.append({
+                "path": "default_alias",
+                "message": "default_alias does not exist in targets registry",
+            })
+        elif not isinstance(default_target.get("enabled", True), bool) or default_target.get("enabled", True) is False:
+            errors.append({
+                "path": "default_alias",
+                "message": "default_alias target must be enabled",
+            })
+
+    return errors
+
+
+def _body_to_dump_input(body: dict) -> dict:
+    """Convert PUT body shape to dump_targets input shape.
+
+    Body: ``{"default_alias": str, "targets": [{alias, year, app_token, ...}]}``
+    dump_targets: ``{"default_alias": str, "targets": {alias: {year, app_token, ...}}}``
+
+    year=None is preserved (dump_targets omits it); enabled defaults to True.
+    """
+    targets_dict: dict[str, dict] = {}
+    for t in body.get("targets", []):
+        alias = t["alias"]
+        entry: dict[str, object] = {
+            "app_token": t.get("app_token"),
+            "table_id": t.get("table_id"),
+            "record_id": t.get("record_id"),
+            "original_field_name": t.get("original_field_name"),
+            "year": t.get("year"),
+            "enabled": t.get("enabled", True),
+        }
+        targets_dict[alias] = entry
+    return {"default_alias": body["default_alias"], "targets": targets_dict}
+
+
+@app.get(
+    "/admin/config/targets",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}},
+)
+async def config_targets_get(
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    target_registry: TargetRegistry = request.app.state.target_registry
+    describe = target_registry.describe()
+    generation = describe.get("reload_generation", 0)
+    config_valid = describe.get("config_valid", False)
+
+    # Fail-closed branch: get_snapshot raises / returns None. The route stays
+    # 200 (mirrors GET /admin/config/profile) so admin tooling can render the
+    # degraded diagnostics instead of a 503.
+    try:
+        snapshot = target_registry.get_snapshot()
+    except Exception:  # noqa: BLE001 — registry raises typed errors; degrade to 200
+        return {
+            "mode": describe.get("mode", "uninitialized"),
+            "default_alias": None,
+            "targets": None,
+            "generation": generation,
+            "config_valid": config_valid,
+            "last_reload_error": describe.get("last_reload_error"),
+            "source_path": describe.get("source_path"),
+        }
+
+    targets = [
+        {
+            "alias": t.alias,
+            "year": t.year,
+            "app_token": t.app_token,
+            "table_id": t.table_id,
+            "record_id": t.record_id,
+            "original_field_name": t.original_field_name,
+            "enabled": t.enabled,
+        }
+        for t in snapshot.targets_by_alias.values()
+    ]
+    return {
+        "mode": describe.get("mode", snapshot.mode),
+        "default_alias": describe.get("default_alias", snapshot.default_alias),
+        "targets": targets,
+        "generation": generation,
+        "config_valid": config_valid,
+    }
+
+
+class ConfigTargetsPutBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_alias: str
+    targets: list[dict[str, object]]
+    base_generation: int = Field(..., ge=0)
+
+
+@app.put(
+    "/admin/config/targets",
+    responses={
+        401: {"model": WebhookErrorResponse},
+        404: {"model": WebhookErrorResponse},
+        409: {"model": WebhookErrorResponse},
+        422: {"model": WebhookErrorResponse},
+    },
+)
+async def config_targets_put(
+    payload: ConfigTargetsPutBody,
+    request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    # Legacy mode → 409 LEGACY_MODE. UI editing is dynamic-mode only; the legacy
+    # single-target env vars (FEISHU_APP_TOKEN/TABLE_ID/RECORD_ID) are managed
+    # via the host env file, not this endpoint.
+    targets_file: Path | None = settings.feishu_targets_file
+    if targets_file is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {
+                    "code": "LEGACY_MODE",
+                    "message": (
+                        "旧版单目标模式不支持 UI 编辑，请配置 FEISHU_TARGETS_FILE 后使用动态模式"
+                    ),
+                },
+            },
+        )
+
+    target_registry: TargetRegistry = request.app.state.target_registry
+
+    async with _targets_write_lock:
+        # Generation guard — describe()["reload_generation"] is the canonical
+        # key (asymmetric with the AI registry's "generation" key; mirrors the
+        # real TargetRegistry.describe()).
+        describe = target_registry.describe()
+        current_generation = describe.get("reload_generation", 0)
+        if current_generation != payload.base_generation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "error": {
+                        "code": "STALE_WRITE",
+                        "message": (
+                            f"registry generation {current_generation} != "
+                            f"base_generation {payload.base_generation}"
+                        ),
+                    },
+                },
+            )
+
+        # Collect-all validation — produces path-tagged errors for the UI.
+        errors = _collect_target_errors(
+            payload.targets,
+            payload.default_alias,
+            original_field_name_default=settings.feishu_original_field_name,
+        )
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "success": False,
+                    "request_id": request_id,
+                    "errors": errors,
+                },
+            )
+
+        # Body → dump_targets input shape (list → dict keyed by alias).
+        dump_input = _body_to_dump_input(payload.model_dump())
+        candidate_text = dump_targets(dump_input)
+
+        # Atomic save: .bak the current file → write tmp → os.replace(tmp, real).
+        # os.replace is atomic on POSIX (rename(2)); a crash between tmp write
+        # and replace leaves the old file intact.
+        try:
+            if targets_file.is_file():
+                bak_path = targets_file.with_suffix(".toml.bak")
+                bak_path.write_bytes(targets_file.read_bytes())
+            tmp_path = targets_file.with_suffix(".toml.tmp")
+            tmp_path.write_text(candidate_text, encoding="utf-8")
+            os.replace(tmp_path, targets_file)
+        except OSError as exc:
+            if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "success": False,
+                        "request_id": request_id,
+                        "error": {
+                            "code": "RUNTIME_READONLY",
+                            "message": (
+                                "runtime 目录只读（Docker :ro 挂载），"
+                                "请在宿主机编辑文件后调用 /admin/config/reload"
+                            ),
+                            "suggested_action": "host-edit",
+                        },
+                    },
+                ) from exc
+            raise
+
+        # Reload the registry so the new generation reflects the saved file.
+        target_registry.reload(force=True)
+        new_describe = target_registry.describe()
+
+    return {
+        "success": True,
+        "generation": new_describe.get("reload_generation", 0),
     }
