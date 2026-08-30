@@ -101,6 +101,10 @@ table td { font-size: 0.8rem; word-break: break-all; }
 .bill-table .col-fallback { width: 140px; }
 .bill-table .col-feishu, .bill-table .col-prompt { width: auto; }
 
+/* 表格首尾列内边距 */
+.bill-table td:first-child, .bill-table thead th:first-child { padding-left: 12px; }
+.bill-table td:last-child, .bill-table thead th:last-child { padding-right: 12px; }
+
 /* AI 字段列 */
 .aikey-label { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; color: #1d1d1f; }
 .target-tag { display: inline-block; background: #fff3e0; color: #e65100; border-radius: 3px; padding: 1px 5px; font-size: 0.68rem; margin-top: 2px; }
@@ -109,7 +113,7 @@ table td { font-size: 0.8rem; word-break: break-all; }
 
 /* 飞书字段列：下拉 + 匹配芯片 */
 .col-feishu select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; }
-.match-chip { display: inline-block; margin-top: 2px; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px; }
+.match-chip { display: block; margin-top: 6px; white-space: nowrap; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px; }
 .match-chip.match-auto { background: #e8f5e9; color: #2e7d32; }
 .match-chip.match-manual { background: #e3f2fd; color: #1565c0; }
 .match-chip.match-none { background: #f5f5f7; color: #86868b; }
@@ -118,12 +122,12 @@ table td { font-size: 0.8rem; word-break: break-all; }
 .col-type select, .col-fallback select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; }
 .col-fallback select:disabled { background: #f5f5f7; color: #86868b; }
 
-/* 提示词列：textarea rows=1, :focus 展开 */
-.col-prompt textarea { width: 100%; height: 30px; min-height: 30px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; resize: vertical; }
-.col-prompt textarea:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); min-height: 60px; }
+/* 提示词列：非 focus 固定 34px 单行，focus 展开为多行浮层 */
+.col-prompt textarea { width: 100%; height: 34px; min-height: 34px; max-height: 34px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; overflow: hidden; resize: none; line-height: 1.4; }
+.col-prompt textarea:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); height: auto; min-height: 80px; max-height: 200px; overflow: auto; resize: vertical; z-index: 10; position: relative; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 
 /* enable-hint (summary 行) */
-.enable-hint { font-size: 0.65rem; color: #86868b; margin-top: 2px; }
+.enable-hint { font-size: 0.65rem; color: #86868b; margin-top: 4px; }
 
 /* CSS toggle 开关 34×20px (真 checkbox 可达, 视觉开关) */
 .toggle { display: inline-flex; align-items: center; cursor: pointer; position: relative; }
