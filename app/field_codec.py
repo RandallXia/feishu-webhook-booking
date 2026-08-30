@@ -114,15 +114,17 @@ def encode_fields(
 
         elif spec.type == "date":
             raw = str(getattr(extraction, spec.ai_key))
-            try:
-                parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M")
-            except ValueError:
+            parsed = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
                 try:
-                    parsed = datetime.strptime(raw, "%Y-%m-%d")
+                    parsed = datetime.strptime(raw, fmt)
+                    break
                 except ValueError:
-                    warnings.append(f"date fallback to today: {field_name}: {raw!r}")
-                    today = datetime.now(_SHANGHAI)
-                    parsed = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                    continue
+            if parsed is None:
+                warnings.append(f"date fallback to today: {field_name}: {raw!r}")
+                today = datetime.now(_SHANGHAI)
+                parsed = today.replace(hour=0, minute=0, second=0, microsecond=0)
             else:
                 parsed = parsed.replace(tzinfo=_SHANGHAI)
             value = int(parsed.timestamp() * 1000)

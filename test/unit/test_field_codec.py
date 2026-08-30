@@ -209,6 +209,25 @@ def test_date_with_hhmm_parse():
     assert warnings == []
 
 
+def test_date_with_hhmmss_parse():
+    """
+    GIVEN a date FieldSpec with a valid YYYY-MM-DD HH:mm:ss value
+    WHEN encode_fields is called
+    THEN the ms timestamp for Shanghai timezone is returned (HH:mm:ss preserved)
+      AND no warnings
+    """
+    extraction = _make_extraction(bill_date="2026-08-28 11:48:02")
+    specs = [
+        FieldSpec(ai_key="bill_date", feishu_field="日期", type="date", target="extract"),
+    ]
+    extract_fields, bill_fields, warnings = encode_fields(extraction, specs, {})
+    # 2026-08-28 11:48:02 in Shanghai = 2026-08-28 03:48:02 UTC
+    expected_dt = datetime(2026, 8, 28, 11, 48, 2, tzinfo=_SHANGHAI)
+    expected_ms = int(expected_dt.timestamp() * 1000)
+    assert extract_fields["日期"] == expected_ms
+    assert warnings == []
+
+
 def test_date_bad_format_fallback_today():
     """
     GIVEN a date FieldSpec with a non-YYYY-MM-DD value

@@ -41,7 +41,7 @@ _FIELD_TYPES: dict[str, str] = {
 }
 
 _REQUIRED_KEYS = list(_FIELD_TYPES.keys())
-_BILL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$")
+_BILL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$")
 
 
 class AiExtractorError(RuntimeError):
