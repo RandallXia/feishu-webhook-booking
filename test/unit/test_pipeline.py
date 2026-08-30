@@ -8,7 +8,7 @@
 #   - Summary writeback failure: update_record_field raises FeishuClientError → bill still created, warning captured
 #   - encode_fields ValueError: ai_status="failed"
 #   - Top-level catch: unexpected Exception in extractor → ai_status="failed", run does NOT raise
-#   - client_token deterministic: same text+alias → same client_token prefix "ai-bill-"
+#   - client_token deterministic: same text+alias → same UUID-format client_token
 #   - extracted dict has amount, category, flow_type, description for Shortcut notification
 #
 # All Feishu IO and AI extraction are mocked. No real network.
@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+
+import re
 
 import pytest
 
@@ -172,7 +174,7 @@ async def test_happy_full_chain():
     WHEN run() is called with original_text, target, profile, and option_whitelists
     THEN ai_status == "succeeded"
       AND update_record_field was called BEFORE create_record (call order)
-      AND create_record received a client_token starting with "ai-bill-"
+      AND create_record received a client_token in UUID format
       AND dedup_hit == False
       AND bill_record_id matches the mock's return
     """
@@ -203,7 +205,8 @@ async def test_happy_full_chain():
     assert update_idx is not None and create_idx is not None
     assert update_idx < create_idx
 
-    assert pipeline._feishu.create_record.call_args.args[3].startswith("ai-bill-")
+    UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    assert UUID_RE.match(pipeline._feishu.create_record.call_args.args[3])
 
 
 # ─── AI failure ─────────────────────────────────────────────────────────────
@@ -390,7 +393,7 @@ async def test_client_token_deterministic():
     GIVEN a pipeline processing the same text+alias twice (with dedup cleared between calls)
     WHEN both runs produce a client_token for feishu.create_record
     THEN both client_tokens are identical
-      AND both start with "ai-bill-"
+      AND both are valid UUIDs
     """
     pipeline_a = _make_pipeline()
     target = _make_target()
@@ -404,8 +407,9 @@ async def test_client_token_deterministic():
     await pipeline_b.run("麦当劳 ¥42", target, profile, whitelists)
     token_b = pipeline_b._feishu.create_record.call_args.args[3]
 
+    UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     assert token_a == token_b
-    assert token_a.startswith("ai-bill-")
+    assert UUID_RE.match(token_a)
 
 
 # ─── extracted dict has notification fields ─────────────────────────────────

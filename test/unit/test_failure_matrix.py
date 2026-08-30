@@ -10,7 +10,7 @@
 #   6. TTL expiry → full chain reruns (AI called again, create_record count=2)
 #   7. AI disabled → response has exactly 5 master keys (no ai_*)
 #   8. Profile registry fail-closed → 503 AI_PROFILE_UNAVAILABLE, then recovers to 200
-#   9. client_token deterministic across two non-deduped calls (sha256(alias:text)[:40])
+#   9. client_token deterministic across two non-deduped calls (sha256(alias:text)[:32] → UUID format)
 #
 # Strategy:
 #   - Scenarios 1,2,5,6: mock ai_pipeline.run to return specific PipelineResult values
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import re
 from dataclasses import replace
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -573,7 +574,7 @@ async def test_client_token_deterministic():
     THEN both responses are 200 + ai_status="succeeded"
       AND feishu.create_record was called twice total
       AND both create_record calls received the SAME client_token
-      AND that client_token == "ai-bill-" + sha256(f"{alias}:{original_text}")[:40]
+      THEN both client_tokens are valid UUIDs derived from the same hash
     """
     extraction = _make_extraction()
     feishu = _mock_feishu_client(record_id="rec-original-015")
@@ -615,8 +616,10 @@ async def test_client_token_deterministic():
     # per TargetRegistry legacy mode). Reconstruct the expected token.
     expected_key = hashlib.sha256(
         f"default:{VALID_PAYLOAD['original_text']}".encode()
-    ).hexdigest()
-    expected_token = "ai-bill-" + expected_key[:40]
+    ).hexdigest()[:32]
+    expected_token = f"{expected_key[:8]}-{expected_key[8:12]}-{expected_key[12:16]}-{expected_key[16:20]}-{expected_key[20:32]}"
 
     assert token_a == token_b
     assert token_a == expected_token
+    UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    assert UUID_RE.match(token_a)

@@ -244,7 +244,8 @@ class AiPipeline:
                 dedup_hit=False,
             )
 
-        client_token = "ai-bill-" + dedup_key[:40]
+        hash_hex = dedup_key[:32]
+        client_token = f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
         try:
             bill_record_id = await self._feishu.create_record(
                 bill_fields,

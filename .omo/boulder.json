@@ -1,0 +1,299 @@
+{
+  "schema_version": 2,
+  "active_work_id": "ai-bill-extraction-pipeline-66cd172d",
+  "works": {
+    "ai-bill-extraction-pipeline-66cd172d": {
+      "work_id": "ai-bill-extraction-pipeline-66cd172d",
+      "active_plan": "/Users/randallxia/Projects/Personal/feishu-webhook-booking/.omo/plans/ai-bill-extraction-pipeline.md",
+      "plan_name": "ai-bill-extraction-pipeline",
+      "status": "completed",
+      "started_at": "2026-08-28T13:13:02.585Z",
+      "updated_at": "2026-08-28T16:18:50.164Z",
+      "session_ids": [
+        "opencode:ses_fb8666b44ffez08duJ4hET63iW"
+      ],
+      "session_origins": {
+        "opencode:ses_fb8666b44ffez08duJ4hET63iW": "direct"
+      },
+      "agent": "atlas",
+      "task_sessions": {
+        "todo:1": {
+          "task_key": "todo:1",
+          "task_label": "1",
+          "task_title": "建分支与测试基建（requirements-dev.txt + 解封 test/ + pytest 配置 + conftest + 冒烟测试）",
+          "session_id": "opencode:ses_fb77448f4ffeFQlvj3gKf8Logw",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-08-28T13:32:57.104Z",
+          "started_at": "2026-08-28T13:28:15.790Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T13:32:57.103Z",
+          "elapsed_ms": 281313
+        },
+        "todo:2": {
+          "task_key": "todo:2",
+          "task_label": "2",
+          "task_title": "app/config.py 新增 AI 管线 env 配置",
+          "session_id": "opencode:ses_fb7638e09ffeC6LdmwuUDUjKM4",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "started_at": "2026-08-28T13:37:06.442Z",
+          "status": "completed",
+          "updated_at": "2026-08-28T13:51:30.661Z",
+          "ended_at": "2026-08-28T13:51:30.660Z",
+          "elapsed_ms": 864218
+        },
+        "todo:3": {
+          "task_key": "todo:3",
+          "task_label": "3",
+          "task_title": "app/ai_extractor.py 双协议结构化提取适配器",
+          "session_id": "opencode:ses_fb75710f8ffeRLbHAs5F5k5wAl",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-08-28T14:13:48.674Z",
+          "started_at": "2026-08-28T14:10:58.341Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T14:13:48.674Z",
+          "elapsed_ms": 170333
+        },
+        "todo:4": {
+          "task_key": "todo:4",
+          "task_label": "4",
+          "task_title": "app/field_codec.py 飞书字段编码器（白名单防污染 + 时区日期 + 软回退）",
+          "session_id": "opencode:ses_fb7453dc9ffez9TXk8OkNXfDoD",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-08-28T14:21:12.027Z",
+          "started_at": "2026-08-28T14:19:36.322Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T14:21:12.027Z",
+          "elapsed_ms": 95705
+        },
+        "todo:6": {
+          "task_key": "todo:6",
+          "task_label": "6",
+          "task_title": "app/ai_profile.py（静态部分）+ app/pipeline.py 编排管线",
+          "session_id": "opencode:ses_fb73e0328ffe288YBjp6tFhe07",
+          "agent": "Sisyphus-Junior",
+          "started_at": "2026-08-28T14:26:38.913Z",
+          "status": "completed",
+          "updated_at": "2026-08-28T14:35:41.347Z",
+          "ended_at": "2026-08-28T14:35:41.347Z",
+          "elapsed_ms": 542434
+        },
+        "todo:7": {
+          "task_key": "todo:7",
+          "task_label": "7",
+          "task_title": "app/main.py 接线：AI_ENABLED 门控 + 响应扩展 + 生命周期装配",
+          "session_id": "opencode:ses_fb730ec6dffepp5SiBdc5Tx7mc",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-08-28T14:54:29.818Z",
+          "started_at": "2026-08-28T14:52:54.133Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T14:54:29.818Z",
+          "elapsed_ms": 95685
+        },
+        "todo:8": {
+          "task_key": "todo:8",
+          "task_label": "8",
+          "task_title": "app/ai_profile.py 注册表（mtime 热重载 + 白名单快照）+ runtime/ai-profile.toml.example",
+          "session_id": "opencode:ses_fb71d431ffferR8YR2AWY3CqOc",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-08-28T15:18:39.476Z",
+          "started_at": "2026-08-28T15:16:40.012Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T15:18:39.476Z",
+          "elapsed_ms": 119464
+        },
+        "todo:9": {
+          "task_key": "todo:9",
+          "task_label": "9",
+          "task_title": "管理端点：POST /admin/ai/test（干跑）+ GET /admin/ai/profile",
+          "session_id": "opencode:ses_fb7085722ffese6Eoy7m5LBUFO",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-08-28T15:36:05.685Z",
+          "started_at": "2026-08-28T15:34:21.063Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T15:36:05.685Z",
+          "elapsed_ms": 104622
+        },
+        "todo:10": {
+          "task_key": "todo:10",
+          "task_label": "10",
+          "task_title": "只读配置页 app/static/admin.html（GET /admin/ai）",
+          "session_id": "opencode:ses_fb6fa4e2bffeKgpQpAU8R0LiiF",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-08-28T15:45:21.652Z",
+          "started_at": "2026-08-28T15:41:33.837Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T15:45:21.652Z",
+          "elapsed_ms": 227815
+        },
+        "todo:12": {
+          "task_key": "todo:12",
+          "task_label": "12",
+          "task_title": "双语文档 + 迁移清单 + AGENTS.md 反模式重写 + env 模板",
+          "session_id": "opencode:ses_fb6efc4c5ffeBDp3TJDdzc7Q5k",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-08-28T16:13:59.138Z",
+          "started_at": "2026-08-28T16:12:15.158Z",
+          "status": "completed",
+          "ended_at": "2026-08-28T16:13:59.138Z",
+          "elapsed_ms": 103980
+        }
+      },
+      "ended_at": "2026-08-28T16:18:50.164Z",
+      "elapsed_ms": 11147579
+    }
+  },
+  "active_plan": "/Users/randallxia/Projects/Personal/feishu-webhook-booking/.omo/plans/ai-bill-extraction-pipeline.md",
+  "started_at": "2026-08-28T13:13:02.585Z",
+  "status": "completed",
+  "updated_at": "2026-08-28T16:18:50.164Z",
+  "session_ids": [
+    "opencode:ses_fb8666b44ffez08duJ4hET63iW"
+  ],
+  "session_origins": {
+    "opencode:ses_fb8666b44ffez08duJ4hET63iW": "direct"
+  },
+  "plan_name": "ai-bill-extraction-pipeline",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "建分支与测试基建（requirements-dev.txt + 解封 test/ + pytest 配置 + conftest + 冒烟测试）",
+      "session_id": "opencode:ses_fb77448f4ffeFQlvj3gKf8Logw",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-08-28T13:32:57.104Z",
+      "started_at": "2026-08-28T13:28:15.790Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T13:32:57.103Z",
+      "elapsed_ms": 281313
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "app/config.py 新增 AI 管线 env 配置",
+      "session_id": "opencode:ses_fb7638e09ffeC6LdmwuUDUjKM4",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "started_at": "2026-08-28T13:37:06.442Z",
+      "status": "completed",
+      "updated_at": "2026-08-28T13:51:30.661Z",
+      "ended_at": "2026-08-28T13:51:30.660Z",
+      "elapsed_ms": 864218
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "app/ai_extractor.py 双协议结构化提取适配器",
+      "session_id": "opencode:ses_fb75710f8ffeRLbHAs5F5k5wAl",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-08-28T14:13:48.674Z",
+      "started_at": "2026-08-28T14:10:58.341Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T14:13:48.674Z",
+      "elapsed_ms": 170333
+    },
+    "todo:4": {
+      "task_key": "todo:4",
+      "task_label": "4",
+      "task_title": "app/field_codec.py 飞书字段编码器（白名单防污染 + 时区日期 + 软回退）",
+      "session_id": "opencode:ses_fb7453dc9ffez9TXk8OkNXfDoD",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-08-28T14:21:12.027Z",
+      "started_at": "2026-08-28T14:19:36.322Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T14:21:12.027Z",
+      "elapsed_ms": 95705
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "app/ai_profile.py（静态部分）+ app/pipeline.py 编排管线",
+      "session_id": "opencode:ses_fb73e0328ffe288YBjp6tFhe07",
+      "agent": "Sisyphus-Junior",
+      "started_at": "2026-08-28T14:26:38.913Z",
+      "status": "completed",
+      "updated_at": "2026-08-28T14:35:41.347Z",
+      "ended_at": "2026-08-28T14:35:41.347Z",
+      "elapsed_ms": 542434
+    },
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "app/main.py 接线：AI_ENABLED 门控 + 响应扩展 + 生命周期装配",
+      "session_id": "opencode:ses_fb730ec6dffepp5SiBdc5Tx7mc",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-08-28T14:54:29.818Z",
+      "started_at": "2026-08-28T14:52:54.133Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T14:54:29.818Z",
+      "elapsed_ms": 95685
+    },
+    "todo:8": {
+      "task_key": "todo:8",
+      "task_label": "8",
+      "task_title": "app/ai_profile.py 注册表（mtime 热重载 + 白名单快照）+ runtime/ai-profile.toml.example",
+      "session_id": "opencode:ses_fb71d431ffferR8YR2AWY3CqOc",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-08-28T15:18:39.476Z",
+      "started_at": "2026-08-28T15:16:40.012Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T15:18:39.476Z",
+      "elapsed_ms": 119464
+    },
+    "todo:9": {
+      "task_key": "todo:9",
+      "task_label": "9",
+      "task_title": "管理端点：POST /admin/ai/test（干跑）+ GET /admin/ai/profile",
+      "session_id": "opencode:ses_fb7085722ffese6Eoy7m5LBUFO",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-08-28T15:36:05.685Z",
+      "started_at": "2026-08-28T15:34:21.063Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T15:36:05.685Z",
+      "elapsed_ms": 104622
+    },
+    "todo:10": {
+      "task_key": "todo:10",
+      "task_label": "10",
+      "task_title": "只读配置页 app/static/admin.html（GET /admin/ai）",
+      "session_id": "opencode:ses_fb6fa4e2bffeKgpQpAU8R0LiiF",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-08-28T15:45:21.652Z",
+      "started_at": "2026-08-28T15:41:33.837Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T15:45:21.652Z",
+      "elapsed_ms": 227815
+    },
+    "todo:12": {
+      "task_key": "todo:12",
+      "task_label": "12",
+      "task_title": "双语文档 + 迁移清单 + AGENTS.md 反模式重写 + env 模板",
+      "session_id": "opencode:ses_fb6efc4c5ffeBDp3TJDdzc7Q5k",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-08-28T16:13:59.138Z",
+      "started_at": "2026-08-28T16:12:15.158Z",
+      "status": "completed",
+      "ended_at": "2026-08-28T16:13:59.138Z",
+      "elapsed_ms": 103980
+    }
+  },
+  "agent": "atlas",
+  "ended_at": "2026-08-28T16:18:50.164Z",
+  "elapsed_ms": 11147579
+}
