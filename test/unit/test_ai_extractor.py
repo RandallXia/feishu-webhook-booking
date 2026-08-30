@@ -30,6 +30,7 @@ def _make_ai_settings(
     api_key="sk-test",
     model="test-model",
     timeout=20,
+    force_tool_call=True,
 ):
     """Build an AI-enabled Settings via dataclasses.replace (bypasses env validation)."""
     return dataclasses.replace(
@@ -43,6 +44,7 @@ def _make_ai_settings(
         ai_profile_file=None,
         ai_profile_reload_interval_seconds=10,
         ai_dedup_ttl_seconds=300,
+        ai_force_tool_call=force_tool_call,
     )
 
 
@@ -170,10 +172,9 @@ async def test_anthropic_happy_path(monkeypatch):
     # And: header x-api-key is present
     assert req.headers["x-api-key"] == "sk-test"
     assert req.headers["anthropic-version"] == "2023-06-01"
-    # And: body does NOT contain tool_choice (relay compat: forced tool_choice
-    # rejected by some backends, e.g. Aliyun Qwen thinking mode)
+    # And: body contains tool_choice (default ai_force_tool_call=True)
     body = json.loads(req.content)
-    assert "tool_choice" not in body
+    assert body["tool_choice"] == {"type": "tool", "name": "submit_bill"}
     assert body["tools"][0]["name"] == "submit_bill"
     assert set(body["tools"][0]["input_schema"]["properties"].keys()) == set(_VALID_INPUT.keys())
     # And: returns ExtractionResult with all 7 fields populated
@@ -181,6 +182,29 @@ async def test_anthropic_happy_path(monkeypatch):
     assert result.summary == "麦当劳 ¥42"
     assert result.amount == 42.0
     assert result.bill_date == "2026-08-28"
+
+
+async def test_anthropic_without_tool_choice(monkeypatch):
+    # Given: settings.ai_force_tool_call=False, ai_provider="anthropic"
+    settings = _make_ai_settings(provider="anthropic", force_tool_call=False)
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _anthropic_response()
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("some ocr text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: body does NOT contain tool_choice (relay compat mode)
+    body = json.loads(captured[0].content)
+    assert "tool_choice" not in body
+    # And: extraction still succeeds
+    assert isinstance(result, ExtractionResult)
+    assert result.summary == "麦当劳 ¥42"
 
 
 async def test_openai_happy_path(monkeypatch):
@@ -213,6 +237,29 @@ async def test_openai_happy_path(monkeypatch):
     assert result.summary == "麦当劳 ¥42"
     assert result.flow_type == "支出"
     assert result.payment_method == "微信"
+
+
+async def test_openai_without_tool_choice(monkeypatch):
+    # Given: settings.ai_force_tool_call=False, ai_provider="openai"
+    settings = _make_ai_settings(provider="openai", force_tool_call=False)
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _openai_response()
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("some ocr text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: body does NOT contain tool_choice (relay compat mode)
+    body = json.loads(captured[0].content)
+    assert "tool_choice" not in body
+    # And: extraction still succeeds
+    assert isinstance(result, ExtractionResult)
+    assert result.summary == "麦当劳 ¥42"
 
 
 async def test_anthropic_timeout_raises(monkeypatch):

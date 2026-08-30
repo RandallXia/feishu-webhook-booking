@@ -68,6 +68,7 @@ All `AI_*` variables are optional when `AI_ENABLED=false` (`get_settings()` skip
 | `AI_PROFILE_FILE` | `AI_ENABLED=true` | — | Path to `ai-profile.toml`; `:ro` mount is fine, mtime hot reload |
 | `AI_PROFILE_RELOAD_INTERVAL_SECONDS` | optional | `10` | Minimum interval between mtime checks for profile hot reload |
 | `AI_DEDUP_TTL_SECONDS` | optional | `300` | Dedup window for the same `(alias, original_text)`; a hit returns `ai_status="duplicate"` without calling AI or creating a record |
+| `AI_FORCE_TOOL_CALL` | optional | `true` | Whether to send the `tool_choice` parameter. Set `false` if your relay rejects `tool_choice` (e.g. Aliyun Qwen thinking mode returns 400) |
 
 ### `AI_BASE_URL` concatenation rule
 

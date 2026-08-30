@@ -252,3 +252,57 @@ def test_bool_env_helper_truthy_values(monkeypatch):
     # When: _bool_env is called with default=True
     # Then: Returns True
     assert _bool_env("_TEST_BOOL", default=True) is True
+
+
+def test_ai_force_tool_call_defaults_to_true_when_unset(monkeypatch):
+    # Given: AI_ENABLED=true, but AI_FORCE_TOOL_CALL is not set
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("AI_API_KEY", "sk-test")
+    monkeypatch.setenv("AI_MODEL", "claude-3")
+    monkeypatch.setenv("AI_PROFILE_FILE", "/tmp/test.toml")
+    monkeypatch.delenv("AI_FORCE_TOOL_CALL", raising=False)
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    # Then: ai_force_tool_call defaults to True
+    assert settings.ai_force_tool_call is True
+
+
+def test_ai_force_tool_call_false_when_explicitly_disabled(monkeypatch):
+    # Given: AI_FORCE_TOOL_CALL=false
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("AI_API_KEY", "sk-test")
+    monkeypatch.setenv("AI_MODEL", "claude-3")
+    monkeypatch.setenv("AI_PROFILE_FILE", "/tmp/test.toml")
+    monkeypatch.setenv("AI_FORCE_TOOL_CALL", "false")
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    # Then: ai_force_tool_call is False
+    assert settings.ai_force_tool_call is False
+
+
+def test_ai_force_tool_call_true_when_explicitly_enabled(monkeypatch):
+    # Given: AI_FORCE_TOOL_CALL=true
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+    monkeypatch.setenv("AI_API_KEY", "sk-x")
+    monkeypatch.setenv("AI_MODEL", "gpt-4")
+    monkeypatch.setenv("AI_PROFILE_FILE", "/tmp/test.toml")
+    monkeypatch.setenv("AI_FORCE_TOOL_CALL", "true")
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    # Then: ai_force_tool_call is True
+    assert settings.ai_force_tool_call is True
