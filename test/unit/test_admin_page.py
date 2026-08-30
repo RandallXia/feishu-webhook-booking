@@ -170,3 +170,25 @@ async def test_get_favicon_returns_svg():
     assert response.status_code == 200
     assert "svg" in response.headers.get("content-type", "")
     assert b"#3370ff" in response.content
+
+
+async def test_admin_html_ocr_flow_section_exists():
+    """
+    GIVEN the FastAPI app is running
+    WHEN GET /admin/ai is requested
+    THEN the response status is 200
+      AND the body contains the OCR Flow Tester card element ids
+    """
+    async with lifespan(app):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app), base_url=TEST_BASE_URL
+        ) as client:
+            response = await client.get("/admin/ai")
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="ocr-flow-section"' in body
+    assert 'id="ocr-flow-text"' in body
+    assert 'id="ocr-flow-token"' in body
+    assert 'id="ocr-flow-btn"' in body
+    assert 'id="ocr-flow-result"' in body

@@ -158,6 +158,28 @@
       <p class="placeholder">测试结果将显示在这里 / Test results will appear here</p>
     </div>
   </div>
+
+  <!-- OCR flow tester — hits the real webhook path -->
+  <div class="card" id="ocr-flow-section">
+    <div class="card-title">OCR 流程测试 / OCR Flow Tester</div>
+    <div id="ocr-flow-banner"></div>
+    <div class="form-group">
+      <label for="ocr-flow-text">OCR 文本 / OCR Text</label>
+      <div class="hint">模拟 iPhone Shortcut 发送的真实 webhook 请求——走完整链路（写原始信息 → AI 提取 → 写精简数据 → 创建账单）/ Simulates the full webhook path</div>
+      <textarea id="ocr-flow-text" placeholder="粘贴 OCR 识别的账单文本">麦当劳 ¥42 微信支付 2026-08-28</textarea>
+    </div>
+    <div class="form-group">
+      <label for="ocr-flow-token">Webhook Token</label>
+      <div class="hint">X-Webhook-Token（与 iPhone Shortcut 中配置的一致）/ Same token as configured in iPhone Shortcut</div>
+      <input type="text" id="ocr-flow-token" placeholder="X-Webhook-Token" />
+    </div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="ocr-flow-btn">发送 / Send</button>
+    </div>
+    <div id="ocr-flow-result">
+      <p class="placeholder">结果将显示在这里 / Results will appear here</p>
+    </div>
+  </div>
 </div>
 
 <script src="/admin/ai/assets/admin.js"></script>
