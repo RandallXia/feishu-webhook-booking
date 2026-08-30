@@ -254,9 +254,10 @@ class AiPipeline:
             )
         except FeishuClientError as exc:
             logger.warning(
-                "pipeline bill create failed alias=%s stage=%s",
+                "pipeline bill create failed alias=%s stage=%s error=%s",
                 target.alias,
                 exc.stage,
+                exc,
             )
             return PipelineResult(
                 ai_status="failed",
