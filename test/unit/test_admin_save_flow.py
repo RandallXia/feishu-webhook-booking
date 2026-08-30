@@ -455,6 +455,8 @@ async def test_admin_html_ai_connection_section_has_required_ids():
     THEN the ai-connection-section contains id="save-env-btn",
        id="ai-provider-select", id="ai-api-key-input",
        id="restart-banner" (the JS wires handlers to these ids)
+       AND the env-other-list is wrapped in a <details> element (todo 4 —
+       collapsible deployment info)
     """
     async with lifespan(app):
         async with httpx.AsyncClient(
@@ -468,3 +470,12 @@ async def test_admin_html_ai_connection_section_has_required_ids():
     assert 'id="ai-provider-select"' in body
     assert 'id="ai-api-key-input"' in body
     assert 'id="restart-banner"' in body
+    # todo 4: env-other-list is inside a <details> collapsible block.
+    assert "<details" in body, "admin.html missing <details> collapsible block"
+    details_start = body.find("<details")
+    details_end = body.find("</details>", details_start)
+    assert details_start != -1 and details_end != -1, "<details> block not well-formed"
+    details_block = body[details_start:details_end]
+    assert 'id="env-other-list"' in details_block, (
+        "env-other-list must be inside the <details> block (todo 4)"
+    )

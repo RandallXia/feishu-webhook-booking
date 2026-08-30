@@ -36,49 +36,46 @@
     </div>
   </div>
 
-  <!-- AI connection section (todo 11) -->
+  <!-- AI connection section (todo 4 — grid + collapsible deployment info) -->
   <div class="card" id="ai-connection-section">
     <div class="card-title">AI 连接 / AI Connection</div>
     <div id="env-banner"></div>
     <div id="restart-banner" class="bar-warn" style="display:none;"></div>
-
-    <div class="form-group">
-      <label for="ai-provider-select">提供商 / Provider</label>
-      <select id="ai-provider-select">
-        <option value="">— 未设置 / Unset —</option>
-        <option value="anthropic">anthropic</option>
-        <option value="openai">openai</option>
-      </select>
+    <div class="ai-grid">
+      <!-- provider/base_url 一行，model/timeout 一行，API Key 全宽 -->
+      <div class="form-group">
+        <label for="ai-provider-select">提供商 / Provider</label>
+        <select id="ai-provider-select">
+          <option value="">— 未设置 / Unset —</option>
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="ai-base-url-input">base_url</label>
+        <input type="text" id="ai-base-url-input" placeholder="留空使用官方 / Leave empty for official endpoint" />
+      </div>
+      <div class="form-group">
+        <label for="ai-model-input">模型 / Model</label>
+        <input type="text" id="ai-model-input" placeholder="如 claude-3-5-sonnet / e.g. gpt-4o" />
+      </div>
+      <div class="form-group">
+        <label for="ai-timeout-input">超时 / Timeout (秒)</label>
+        <input type="number" id="ai-timeout-input" min="1" placeholder="20" />
+      </div>
+      <div class="form-group ai-grid-full">
+        <label for="ai-api-key-input">API Key</label>
+        <input type="password" id="ai-api-key-input" autocomplete="off" />
+        <div class="hint" id="ai-api-key-hint"></div>
+      </div>
     </div>
-
-    <div class="form-group">
-      <label for="ai-base-url-input">base_url</label>
-      <input type="text" id="ai-base-url-input" placeholder="留空使用官方 / Leave empty for official endpoint" />
-    </div>
-
-    <div class="form-group">
-      <label for="ai-model-input">模型 / Model</label>
-      <input type="text" id="ai-model-input" placeholder="如 claude-3-5-sonnet / e.g. gpt-4o" />
-    </div>
-
-    <div class="form-group">
-      <label for="ai-timeout-input">超时 / Timeout (秒)</label>
-      <input type="number" id="ai-timeout-input" min="1" placeholder="20" />
-    </div>
-
-    <div class="form-group">
-      <label for="ai-api-key-input">API Key</label>
-      <input type="password" id="ai-api-key-input" autocomplete="off" />
-      <div class="hint" id="ai-api-key-hint"></div>
-    </div>
-
-    <div class="form-group">
-      <div class="hint">其它环境变量只读 / Other env vars are read-only</div>
+    <details class="env-details">
+      <summary>部署信息 / Deployment Info</summary>
       <div id="env-other-list"></div>
-    </div>
-
-    <div style="margin-top: 12px;">
-      <button class="btn btn-primary" id="save-env-btn">保存 AI 连接 / Save AI Connection</button>
+    </details>
+    <div class="ai-save-bar">
+      <button class="btn btn-primary" id="save-env-btn">保存 AI 连接 / Save</button>
+      <span class="hint">重启后生效 / Restart required</span>
     </div>
   </div>
 
