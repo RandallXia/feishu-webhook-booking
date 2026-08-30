@@ -911,6 +911,8 @@
       while (status.firstChild) status.removeChild(status.firstChild);
       status.appendChild(el('span', { className: 'status-tag status-ok' },
         '✓ ' + (parsed.app_token || '')));
+      billRenderTokens();
+      markDirty();
       billLoadTablesFromAppToken();
     }).catch(function(err) {
       while (status.firstChild) status.removeChild(status.firstChild);
@@ -933,6 +935,7 @@
     }
     while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
     billTableSelect.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    billTableSelect.disabled = true;
     api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
       billTableSelect.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
@@ -950,6 +953,7 @@
           }
         }
       }
+      billTableSelect.disabled = false;
     }).catch(function(err) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
       billTableSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
@@ -982,6 +986,8 @@
     billTableIdInput.value = billTableSelect.value;
     var appToken = billAppTokenInput.value.trim();
     var tableId = billTableSelect.value;
+    billRenderTokens();
+    markDirty();
     if (appToken && tableId) {
       billLoadFields(appToken, tableId).then(function(fields) {
         renderBillRows(fields);
@@ -1061,15 +1067,30 @@
   }
 
   function renderBillRows(fields) {
+    // Before re-rendering, fold the current DOM values back into
+    // billExistingFields so unsaved edits survive a table-switch or
+    // re-derive (the new rows read from billExistingFields first).
+    billCaptureDomIntoExisting();
     while (billFieldsList.firstChild) billFieldsList.removeChild(billFieldsList.firstChild);
     var derived = autoDerive(fields || []);
     for (var i = 0; i < AI_KEYS.length; i++) {
       var key = AI_KEYS[i];
       var existing = billExistingFields[key];
       var prefilled = derived[key];
-      var spec = existing || prefilled || { feishu_field: '', type: 'text', fallback: null };
+      var spec;
+      if (existing && existing.feishu_field) {
+        spec = existing;
+      } else if (prefilled) {
+        // mark derived so the chip shows "auto" on first paint.
+        spec = { feishu_field: prefilled.feishu_field, type: prefilled.type,
+                 fallback: prefilled.fallback, prompt: existing ? existing.prompt : '',
+                 enabled: existing ? existing.enabled : true, _derived: true };
+      } else {
+        spec = existing || { feishu_field: '', type: 'text', fallback: null, enabled: true };
+      }
       billFieldsList.appendChild(renderBillRow(key, spec, fields || []));
     }
+    billUpdateMatchedCount();
   }
 
   // billExistingFields holds the last GET response's per-key spec so a
@@ -1077,14 +1098,114 @@
   // loaded configuration rather than resetting to empty.
   var billExistingFields = {};
 
+  // Fold the current DOM row values (feishu_field/type/fallback/prompt/enabled)
+  // back into billExistingFields. Called before any re-render so unsaved edits
+  // survive a table-switch or re-derive. summary is always enabled (hard lock).
+  function billCaptureDomIntoExisting() {
+    if (!billFieldsList) return;
+    var rows = billFieldsList.querySelectorAll('.bill-row');
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var aiKey = r.getAttribute('data-ai-key');
+      var ffSel = r.querySelector('.feishu-field-select');
+      var typeSel = r.querySelector('.type-select');
+      var fbSel = r.querySelector('.fallback-select');
+      var pInput = r.querySelector('.prompt-input');
+      var cb = r.querySelector('.enable-toggle');
+      if (!aiKey || !ffSel) continue;
+      var type = typeSel ? typeSel.value : 'text';
+      var fb = (type === 'single_select' && fbSel && fbSel.value) ? fbSel.value : null;
+      billExistingFields[aiKey] = {
+        feishu_field: ffSel.value || '',
+        type: type,
+        fallback: fb,
+        prompt: pInput ? pInput.value : '',
+        enabled: aiKey === 'summary' ? true : (cb ? cb.checked : true),
+      };
+    }
+  }
+
+  // Update #bill-matched-count: N = rows where feishu_field is non-empty AND
+  // the toggle is on. summary counts only if its feishu_field is set.
+  function billUpdateMatchedCount() {
+    if (!billFieldsList) return;
+    var countEl = document.getElementById('bill-matched-count');
+    if (!countEl) return;
+    var rows = billFieldsList.querySelectorAll('.bill-row');
+    var n = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var ffSel = r.querySelector('.feishu-field-select');
+      var cb = r.querySelector('.enable-toggle');
+      if (ffSel && ffSel.value && cb && cb.checked) n++;
+    }
+    while (countEl.firstChild) countEl.removeChild(countEl.firstChild);
+    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/8 · Matched'));
+  }
+
+  // Render the two token badges (app_token / table_id) into #bill-tokens.
+  // Pure paint — callers that represent user edits call markDirty() themselves
+  // (parse-url success / table-select change). Initial GET load calls this
+  // without markDirty. All text via textContent (XSS rule).
+  function billRenderTokens() {
+    var tokens = document.getElementById('bill-tokens');
+    if (!tokens) return;
+    while (tokens.firstChild) tokens.removeChild(tokens.firstChild);
+    var appTok = billAppTokenInput ? billAppTokenInput.value.trim() : '';
+    var tblId = billTableIdInput ? billTableIdInput.value.trim() : '';
+    if (appTok) {
+      var b1 = el('span', { className: 'token-badge' });
+      b1.appendChild(el('span', { className: 'token-key' }, 'app_token: '));
+      b1.appendChild(el('span', { className: 'token-val' }, appTok));
+      tokens.appendChild(b1);
+    }
+    if (tblId) {
+      var b2 = el('span', { className: 'token-badge' });
+      b2.appendChild(el('span', { className: 'token-key' }, 'table: '));
+      b2.appendChild(el('span', { className: 'token-val' }, tblId));
+      tokens.appendChild(b2);
+    }
+  }
+
   function renderBillRow(aiKey, spec, fields) {
-    spec = spec || { feishu_field: '', type: 'text', fallback: null };
-    var row = el('div', { className: 'bill-row', 'data-ai-key': aiKey });
+    spec = spec || { feishu_field: '', type: 'text', fallback: null, enabled: true };
+    var isSummary = aiKey === 'summary';
+    var isRawSource = aiKey === 'raw_source';
+    // summary is the extract-table writeback field — hard-locked on.
+    var enabled = isSummary ? true : (spec.enabled !== false);
+    var row = el('tr', { className: 'bill-row', 'data-ai-key': aiKey });
+    if (!enabled) row.classList.add('bill-row-disabled');
 
-    row.appendChild(el('div', { className: 'bill-row-key' }, aiKey));
+    // ── 启用列：真 checkbox + CSS toggle; summary 行硬锁 + hint.
+    var enableCell = el('td', { className: 'col-enable' });
+    var toggleLabel = el('label', { className: 'toggle' });
+    var cb = el('input', { type: 'checkbox', className: 'enable-toggle' });
+    cb.checked = enabled;
+    if (isSummary) cb.disabled = true;
+    toggleLabel.appendChild(cb);
+    toggleLabel.appendChild(el('span', { className: 'toggle-track' },
+      null));
+    toggleLabel.lastChild.appendChild(el('span', { className: 'toggle-thumb' }));
+    enableCell.appendChild(toggleLabel);
+    if (isSummary) {
+      enableCell.appendChild(el('div', { className: 'enable-hint' }, '核心写回字段'));
+    }
+    row.appendChild(enableCell);
 
-    var ffGroup = el('div', { className: 'bill-row-field' });
-    ffGroup.appendChild(el('label', null, '飞书字段 / Feishu Field'));
+    // ── AI 字段列：等宽 ai_key + summary 写回 tag + raw_source source tag.
+    var aikeyCell = el('td', { className: 'col-aikey' });
+    aikeyCell.appendChild(el('div', { className: 'aikey-label' }, aiKey));
+    if (isSummary) {
+      aikeyCell.appendChild(el('span', { className: 'target-tag target-extract' }, '写回提取表'));
+    }
+    if (isRawSource) {
+      var srcTag = el('span', { className: 'source-tag' }, 'source=summary');
+      aikeyCell.appendChild(srcTag);
+    }
+    row.appendChild(aikeyCell);
+
+    // ── 飞书字段列：下拉 + 匹配芯片 (auto/manual/none).
+    var ffCell = el('td', { className: 'col-feishu' });
     var ffSel = el('select', { className: 'feishu-field-select' });
     ffSel.appendChild(el('option', { value: '' }, '未映射 / Unmapped'));
     for (var i = 0; i < fields.length; i++) {
@@ -1092,45 +1213,54 @@
       ffSel.appendChild(el('option', { value: f.name }, f.name));
     }
     ffSel.value = spec.feishu_field || '';
-    ffGroup.appendChild(ffSel);
-    row.appendChild(ffGroup);
+    ffCell.appendChild(ffSel);
+    var chip = el('span', { className: 'match-chip' });
+    ffCell.appendChild(chip);
+    row.appendChild(ffCell);
 
-    var typeGroup = el('div', { className: 'bill-row-type' });
-    typeGroup.appendChild(el('label', null, '类型 / Type'));
+    // ── 类型列.
+    var typeCell = el('td', { className: 'col-type' });
     var typeSel = el('select', { className: 'type-select' });
     var typeOpts = ['text', 'number', 'single_select', 'date', 'passthrough'];
     for (var t = 0; t < typeOpts.length; t++) {
       typeSel.appendChild(el('option', { value: typeOpts[t] }, typeOpts[t]));
     }
     typeSel.value = spec.type || 'text';
-    typeGroup.appendChild(typeSel);
-    row.appendChild(typeGroup);
+    typeCell.appendChild(typeSel);
+    row.appendChild(typeCell);
 
-    var fbGroup = el('div', { className: 'bill-row-fallback' });
-    fbGroup.appendChild(el('label', null, '回退 / Fallback'));
+    // ── 回退列.
+    var fbCell = el('td', { className: 'col-fallback' });
     var fbSel = el('select', { className: 'fallback-select' });
-    fbGroup.appendChild(fbSel);
-    row.appendChild(fbGroup);
+    fbCell.appendChild(fbSel);
+    row.appendChild(fbCell);
 
-    var pGroup = el('div', { className: 'bill-row-prompt' });
-    pGroup.appendChild(el('label', null, '提示词 / Prompt'));
-    var pInput = el('textarea', { className: 'prompt-input' });
+    // ── 提示词列：textarea rows=1, CSS 展开.
+    var pCell = el('td', { className: 'col-prompt' });
+    var pInput = el('textarea', { className: 'prompt-input', rows: '1' });
     pInput.value = spec.prompt || '';
-    pGroup.appendChild(pInput);
-    row.appendChild(pGroup);
+    pCell.appendChild(pInput);
+    row.appendChild(pCell);
 
-    var targetGroup = el('div', { className: 'bill-row-target' });
-    targetGroup.appendChild(el('label', null, 'target'));
-    var targetText = aiKey === 'summary' ? 'extract (写回提取表)' : 'bill';
-    targetGroup.appendChild(el('span', { className: 'target-tag' }, targetText));
-    row.appendChild(targetGroup);
-
-    var sourceGroup = el('div', { className: 'bill-row-source' });
-    if (aiKey === 'raw_source') {
-      sourceGroup.appendChild(el('label', null, 'source'));
-      sourceGroup.appendChild(el('span', { className: 'source-tag' }, 'summary'));
+    // match-chip state: auto=derived, manual=user-set, none=empty.
+    function refreshChip() {
+      while (chip.firstChild) chip.removeChild(chip.firstChild);
+      var hasField = !!ffSel.value;
+      if (!hasField) {
+        chip.classList.remove('match-auto', 'match-manual');
+        chip.classList.add('match-none');
+        chip.appendChild(document.createTextNode('○ 未映射'));
+      } else if (spec._derived) {
+        chip.classList.remove('match-manual', 'match-none');
+        chip.classList.add('match-auto');
+        chip.appendChild(document.createTextNode('✓ 自动匹配'));
+      } else {
+        chip.classList.remove('match-auto', 'match-none');
+        chip.classList.add('match-manual');
+        chip.appendChild(document.createTextNode('● 手动'));
+      }
     }
-    row.appendChild(sourceGroup);
+    refreshChip();
 
     function refreshFallback() {
       while (fbSel.firstChild) fbSel.removeChild(fbSel.firstChild);
@@ -1155,19 +1285,46 @@
       fbSel.value = (selType === 'single_select' && spec.fallback) ? spec.fallback : '';
     }
     refreshFallback();
-    ffSel.addEventListener('change', refreshFallback);
+    ffSel.addEventListener('change', function() {
+      // user picked a field manually → mark manual for the chip.
+      spec._derived = false;
+      refreshChip();
+      refreshFallback();
+    });
     typeSel.addEventListener('change', refreshFallback);
+
+    // toggle change → disabled class + control disabled (toggle stays enabled).
+    cb.addEventListener('change', function() {
+      var on = cb.checked;
+      row.classList.toggle('bill-row-disabled', !on);
+      ffSel.disabled = !on;
+      typeSel.disabled = !on;
+      fbSel.disabled = !on;
+      pInput.disabled = !on;
+      chip.style.display = on ? '' : 'none';
+    });
+    // apply initial disabled state for non-summary rows (controls only; toggle stays live).
+    if (!enabled && !isSummary) {
+      ffSel.disabled = true;
+      typeSel.disabled = true;
+      fbSel.disabled = true;
+      pInput.disabled = true;
+      chip.style.display = 'none';
+    }
 
     return row;
   }
 
   // Parse a validation error path into a bill-row locator. Returns:
+  //   {banner: true}                     for path "bill" or "extract" (section-
+  //                                      level error → showBanner, not row mark)
   //   {summaryField: true}              for path "extract.summary_field"
   //   {rowIndex: <int>, field: <string>} for path "fields[i].<field>"
   //   {rowIndex: <int>}                  for path "fields[i]"
   //   null                               for unrecognized shapes
   function billParseErrorPath(path) {
     if (typeof path !== 'string') return null;
+    if (path === 'bill' || path === 'extract') return { banner: true };
     if (path === 'extract.summary_field') return { summaryField: true };
     var m = path.match(/^fields\[(\d+)\](?:\.(\w+))?$/);
     if (!m) return null;
@@ -1194,6 +1351,19 @@
       marked[i].classList.remove('field-error');
       marked[i].style.borderColor = '';
     }
+    var errRow = document.getElementById('bill-error-row');
+    if (errRow) {
+      while (errRow.firstChild) errRow.removeChild(errRow.firstChild);
+      errRow.style.display = 'none';
+    }
+  }
+
+  function billShowErrorRow(message) {
+    var errRow = document.getElementById('bill-error-row');
+    if (!errRow) return;
+    while (errRow.firstChild) errRow.removeChild(errRow.firstChild);
+    errRow.appendChild(document.createTextNode(message));
+    errRow.style.display = 'block';
   }
 
   function billGatherBody() {
@@ -1206,9 +1376,12 @@
       var typeSel = r.querySelector('.type-select');
       var fbSel = r.querySelector('.fallback-select');
       var pInput = r.querySelector('.prompt-input');
+      var cb = r.querySelector('.enable-toggle');
       var target = aiKey === 'summary' ? 'extract' : 'bill';
       var source = (aiKey === 'summary' || aiKey === 'raw_source') ? 'summary' : null;
       var fb = (typeSel.value === 'single_select' && fbSel.value) ? fbSel.value : null;
+      // summary is hard-locked on; ignore the DOM checkbox for it.
+      var enabled = aiKey === 'summary' ? true : (cb ? cb.checked : true);
       fields.push({
         ai_key: aiKey,
         feishu_field: ffSel.value || null,
@@ -1217,6 +1390,7 @@
         fallback: fb,
         prompt: pInput.value || null,
         source: source,
+        enabled: enabled,
       });
     }
     return {
@@ -1262,6 +1436,7 @@
       if (billPromptHeader) billPromptHeader.value = data.prompt_header || '';
       if (billAppTokenInput) billAppTokenInput.value = (data.bill && data.bill.app_token) || '';
       if (billTableIdInput) billTableIdInput.value = (data.bill && data.bill.table_id) || '';
+      billRenderTokens();
       // Build the per-key existing-field map so a re-render preserves loaded
       // config rather than resetting.
       billExistingFields = {};
@@ -1274,14 +1449,17 @@
             type: f.type || 'text',
             fallback: f.fallback || null,
             prompt: f.prompt || '',
+            enabled: f.enabled !== false,
           };
         }
       }
       // If the bill table is already configured, fetch its fields so the
-      // feishu_field <select>s carry real options.
+      // feishu_field <select>s carry real options. Also populate the table
+      // list so the table-select is enabled + shows the current table.
       var appToken = (data.bill && data.bill.app_token) || '';
       var tableId = (data.bill && data.bill.table_id) || '';
       if (appToken && tableId) {
+        billLoadTablesFromAppToken();
         billLoadFields(appToken, tableId).then(function(cachedFields) {
           renderBillRows(cachedFields);
         });
@@ -1308,7 +1486,9 @@
     });
   }
 
-  if (billDeriveBtn) billDeriveBtn.addEventListener('click', function() {
+  if (billDeriveBtn) billDeriveBtn.addEventListener('click', function(evt) {
+    // <a href="#"> — prevent the default anchor navigation.
+    if (evt && evt.preventDefault) evt.preventDefault();
     var fields = billCachedFields || [];
     if (!fields.length) {
       if (billBanner) showBanner(billBanner, 'warn', '请先选择表并加载字段 / Select a table and load fields first');
@@ -1339,6 +1519,13 @@
         for (var i = 0; i < errors.length; i++) {
           var loc = billParseErrorPath(errors[i].path);
           if (!loc) continue;
+          if (loc.banner) {
+            // section-level error (path "bill"/"extract") → banner + error row.
+            // Fixes the prior silent-drop: these paths had no locator branch.
+            showBanner(billBanner, 'err', errors[i].message);
+            billShowErrorRow(errors[i].message);
+            continue;
+          }
           if (loc.summaryField) {
             showBanner(billBanner, 'err', errors[i].message);
             continue;

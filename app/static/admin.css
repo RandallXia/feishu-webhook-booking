@@ -60,3 +60,98 @@ table td { font-size: 0.8rem; word-break: break-all; }
 #extract-banner.bar-info { background: #e3f2fd; color: #1565c0; display: block; }
 
 @media (max-width: 640px) { .key-value { grid-template-columns: 100px 1fr; } }
+
+/* ─── Bill section (todo 3) ────────────────────────────────────────────── */
+
+/* bill-banner shares the extract-banner pattern. */
+#bill-banner { border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 0.85rem; display: none; }
+#bill-banner.bar-ok { background: #e8f5e9; color: #2e7d32; display: block; }
+#bill-banner.bar-err { background: #fce4ec; color: #c62828; display: block; }
+#bill-banner.bar-warn { background: #fff3e0; color: #e65100; display: block; }
+#bill-banner.bar-info { background: #e3f2fd; color: #1565c0; display: block; }
+
+/* 步行栏：URL→解析→表选择一行 flex */
+.bill-step-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.bill-step-row .url-input { flex: 1 1 280px; padding: 8px 12px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 0.875rem; }
+.bill-step-row .url-input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.bill-step-row .table-select { min-width: 140px; padding: 8px 12px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 0.875rem; }
+.bill-step-row .table-select:disabled { background: #f5f5f7; color: #86868b; cursor: not-allowed; }
+.bill-step-row .parse-status, .bill-step-row .table-status { font-size: 0.8rem; flex-basis: 100%; }
+
+/* token 徽章 */
+.bill-tokens { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; min-height: 4px; }
+.bill-tokens .token-badge { background: #e3f2fd; color: #1565c0; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.bill-tokens .token-key { color: #86868b; }
+.bill-tokens .token-val { font-weight: 500; }
+
+/* 匹配计数 + 重新推导链接 */
+.bill-table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.bill-table-header #bill-matched-count { font-size: 0.8rem; color: #515154; font-weight: 500; }
+.bill-derive-link { color: #0071e3; font-size: 0.8rem; text-decoration: none; }
+.bill-derive-link:hover { text-decoration: underline; }
+
+/* 映射表格 */
+.bill-table-wrap { border: 1px solid #e8e8ed; border-radius: 8px; overflow: hidden; }
+.bill-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.bill-table thead th { background: #f5f5f7; font-weight: 600; color: #515154; font-size: 0.75rem; text-align: left; padding: 8px; border-bottom: 1px solid #e8e8ed; position: sticky; top: 0; z-index: 1; }
+.bill-table tbody td { padding: 6px 8px; border-bottom: 1px solid #f0f0f3; font-size: 0.8rem; vertical-align: middle; }
+.bill-table .col-enable { width: 56px; }
+.bill-table .col-aikey { width: 130px; }
+.bill-table .col-type { width: 120px; }
+.bill-table .col-fallback { width: 140px; }
+.bill-table .col-feishu, .bill-table .col-prompt { width: auto; }
+
+/* AI 字段列 */
+.aikey-label { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; color: #1d1d1f; }
+.target-tag { display: inline-block; background: #fff3e0; color: #e65100; border-radius: 3px; padding: 1px 5px; font-size: 0.68rem; margin-top: 2px; }
+.target-tag.target-extract { background: #fff3e0; color: #e65100; }
+.source-tag { display: inline-block; background: #f5f5f7; color: #86868b; border-radius: 3px; padding: 1px 5px; font-size: 0.68rem; margin-top: 2px; }
+
+/* 飞书字段列：下拉 + 匹配芯片 */
+.col-feishu select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; }
+.match-chip { display: inline-block; margin-top: 2px; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px; }
+.match-chip.match-auto { background: #e8f5e9; color: #2e7d32; }
+.match-chip.match-manual { background: #e3f2fd; color: #1565c0; }
+.match-chip.match-none { background: #f5f5f7; color: #86868b; }
+
+/* 类型/回退列 */
+.col-type select, .col-fallback select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; }
+.col-fallback select:disabled { background: #f5f5f7; color: #86868b; }
+
+/* 提示词列：textarea rows=1, :focus 展开 */
+.col-prompt textarea { width: 100%; height: 30px; min-height: 30px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; resize: vertical; }
+.col-prompt textarea:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); min-height: 60px; }
+
+/* enable-hint (summary 行) */
+.enable-hint { font-size: 0.65rem; color: #86868b; margin-top: 2px; }
+
+/* CSS toggle 开关 34×20px (真 checkbox 可达, 视觉开关) */
+.toggle { display: inline-flex; align-items: center; cursor: pointer; position: relative; }
+.toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.toggle .toggle-track { display: inline-block; width: 34px; height: 20px; background: #d2d2d7; border-radius: 10px; position: relative; transition: background 0.2s; }
+.toggle .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: transform 0.2s; }
+.toggle input[type="checkbox"]:checked + .toggle-track { background: #34c759; }
+.toggle input[type="checkbox"]:checked + .toggle-track .toggle-thumb { transform: translateX(14px); }
+.toggle input[type="checkbox"]:focus-visible + .toggle-track { box-shadow: 0 0 0 3px rgba(0,113,227,0.25); }
+.toggle input[type="checkbox"]:disabled { cursor: not-allowed; }
+.toggle input[type="checkbox"]:disabled + .toggle-track { opacity: 0.6; }
+
+/* 禁用行 */
+.bill-row-disabled { opacity: 0.45; filter: grayscale(0.4); }
+
+/* 422 标红控件 */
+.field-error { border-color: #c62828 !important; }
+
+/* bill-error-row 消息行 */
+.bill-error-row { background: #fce4ec; color: #c62828; padding: 8px 12px; font-size: 0.8rem; border-radius: 0 0 8px 8px; }
+
+/* bill-save-bar sticky bottom */
+.bill-save-bar { position: sticky; bottom: 0; background: #fff; border-top: 1px solid #e8e8ed; padding: 12px 0; margin-top: 12px; z-index: 5; }
+
+/* 响应式 640px */
+@media (max-width: 640px) {
+  .bill-step-row { flex-direction: column; align-items: stretch; }
+  .bill-step-row .url-input, .bill-step-row .table-select { flex: 1 1 auto; }
+  .bill-table { font-size: 0.72rem; }
+  .bill-table .col-fallback { display: none; }
+}

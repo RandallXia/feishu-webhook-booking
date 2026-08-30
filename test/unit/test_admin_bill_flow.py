@@ -510,6 +510,45 @@ async def test_profile_put_422_extract_summary_field_path(monkeypatch, profile_f
     assert response.json()["detail"]["errors"] == errors
 
 
+async def test_profile_put_422_bill_path_returns_banner_shape(monkeypatch, profile_file):
+    """
+    GIVEN validate returns an error with path "bill" (section-level — e.g. the
+       bill app_token/table_id block is missing or malformed)
+    WHEN PUT /admin/config/profile is called
+    THEN the response status is 422
+      AND the body is {detail: {errors: [{path: "bill", message: ...}]}}
+      (the UI's billParseErrorPath maps path "bill" → {banner: true} and the
+       save catch shows the message in both the bill-banner AND bill-error-row;
+       this fixes the prior silent-drop where path="bill" had no locator branch)
+    """
+    from app import main as main_mod
+
+    errors = [{"path": "bill", "message": "bill table app_token and table_id are required"}]
+    monkeypatch.setattr(
+        main_mod, "validate_profile_candidate",
+        AsyncMock(return_value=(_PROFILE, _WHITELISTS, errors)),
+    )
+
+    registry = _mock_registry_healthy(generation=1)
+
+    async with lifespan(app):
+        app.state.settings = _enabled_settings(profile_file=profile_file)
+        app.state.ai_registry = registry
+        app.state.feishu_client = _mock_feishu()
+
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app), base_url=TEST_BASE_URL
+        ) as client:
+            response = await client.put(
+                "/admin/config/profile",
+                json={"profile": _profile_dict(), "base_generation": 1},
+                headers={"X-Admin-Token": ADMIN_TOKEN},
+            )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"] == errors
+
+
 async def test_profile_put_stale_generation_returns_409_stale(profile_file):
     """
     GIVEN ai_registry.get_status generation=5
@@ -614,6 +653,72 @@ def test_admin_js_node_check_passes():
         f"node --check failed (exit {result.returncode}):\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+def test_admin_js_has_enable_toggle_class():
+    """
+    GIVEN app/static/admin.js (todo 3 — per-field toggle UI)
+    WHEN the source is scanned
+    THEN it contains the `enable-toggle` class (the CSS toggle checkbox
+       wired into renderBillRow) at least once
+    """
+    js = _read_static("admin.js")
+    assert js.count("enable-toggle") >= 1, "admin.js missing enable-toggle class"
+
+
+def test_admin_js_has_bill_row_disabled_class():
+    """
+    GIVEN app/static/admin.js (todo 3 — disabled-row visual state)
+    WHEN the source is scanned
+    THEN it contains the `bill-row-disabled` class (toggled on a row when
+       its enable toggle is off) at least once
+    """
+    js = _read_static("admin.js")
+    assert js.count("bill-row-disabled") >= 1, "admin.js missing bill-row-disabled class"
+
+
+def test_admin_html_bill_section_has_table_skeleton():
+    """
+    GIVEN app/static/admin.html (todo 3 — table-based mapping UI)
+    WHEN the source is scanned
+    THEN it contains `<table class="bill-table"` (the 8-row mapping table)
+       AND `<tbody id="bill-fields-list"` (the rows container)
+    """
+    html = _read_static("admin.html")
+    assert '<table class="bill-table"' in html, "admin.html missing bill-table table"
+    assert '<tbody id="bill-fields-list"' in html, "admin.html missing bill-fields-list tbody"
+
+
+def test_admin_bill_derive_btn_not_button_selector():
+    """
+    GIVEN app/static/admin.js + admin.css (todo 3 — derive link is now <a>)
+    WHEN the source is scanned for `bill-derive-btn`
+    THEN no line matches a `button#bill-derive-btn` or `.btn#bill-derive-btn`
+       selector prefix (the derive control is an <a>, not a button)
+    """
+    for name in ("admin.js", "admin.css"):
+        src = _read_static(name)
+        for line in src.splitlines():
+            if "bill-derive-btn" in line:
+                assert "button#" not in line, f"{name} has button#bill-derive-btn selector"
+                assert ".btn#" not in line, f"{name} has .btn#bill-derive-btn selector"
+
+
+def test_admin_js_bill_parse_error_path_handles_bill_and_extract_banner():
+    """
+    GIVEN admin.js billParseErrorPath function (todo 3 — banner routing fix)
+    WHEN the function body is scanned
+    THEN it returns {banner: true} for path "bill" or "extract"
+       (the section-level error → showBanner path; fixes the prior silent-drop
+       where path="bill"/"extract" had no locator branch)
+    """
+    js = _read_static("admin.js")
+    m = re.search(r"function\s+billParseErrorPath\s*\([^)]*\)\s*\{(.+?)\n\s*function\s", js, re.S)
+    assert m, "billParseErrorPath function body not isolatable"
+    body = m.group(1)
+    assert "banner" in body, "billParseErrorPath missing banner branch for bill/extract paths"
+    assert "'bill'" in body or '"bill"' in body, "billParseErrorPath missing 'bill' path literal"
+    assert "'extract'" in body or '"extract"' in body, "billParseErrorPath missing 'extract' path literal"
 
 
 async def test_admin_html_bill_section_has_required_ids():
