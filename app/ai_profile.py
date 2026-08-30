@@ -148,6 +148,7 @@ def parse_profile_text(text: str) -> AiProfile:
                 fallback=fallback,
                 prompt=str(raw.get("prompt", "")).strip(),
                 source=source,
+                enabled=bool(raw.get("enabled", True)),
             )
         )
 

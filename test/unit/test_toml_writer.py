@@ -388,3 +388,70 @@ def test_dump_profile_prompt_header_first():
         f"prompt_header value at index {prompt_idx} should appear before "
         f"first [section] at index {first_bracket}"
     )
+
+
+# ─── enabled flag serialization ────────────────────────────────────────────
+
+
+def test_dump_profile_enabled_both_states_serialized():
+    """
+    GIVEN a profile dict whose fields include both enabled=True AND enabled=False
+    WHEN dump_profile is called
+    THEN both `enabled = true` and `enabled = false` appear verbatim in the output
+      (False must NOT be omitted — the `val is None` guard passes for False)
+      AND tomllib round-trips both values back to their bool originals
+    """
+    data = {
+        "prompt_header": "h",
+        "extract": {"summary_field": "s"},
+        "bill": {"app_token": "bascnX", "table_id": "tblX"},
+        "fields": [
+            {
+                "ai_key": "a", "feishu_field": "f", "type": "text",
+                "target": "extract", "prompt": "p", "enabled": True,
+            },
+            {
+                "ai_key": "b", "feishu_field": "g", "type": "text",
+                "target": "bill", "prompt": "q", "enabled": False,
+            },
+        ],
+    }
+    result = dump_profile(data)
+    assert "enabled = true" in result
+    assert "enabled = false" in result
+    parsed = tomllib.loads(result)
+    assert parsed["fields"][0]["enabled"] is True
+    assert parsed["fields"][1]["enabled"] is False
+
+
+def test_dump_profile_enabled_key_order_after_target():
+    """
+    GIVEN a profile dict with a field carrying enabled
+    WHEN dump_profile is called
+    THEN the `enabled` key appears in the output immediately AFTER `target`
+       AND before `fallback`/`source`/`prompt`
+    """
+    data = {
+        "prompt_header": "h",
+        "extract": {"summary_field": "s"},
+        "bill": {"app_token": "bascnX", "table_id": "tblX"},
+        "fields": [
+            {
+                "ai_key": "a", "feishu_field": "f", "type": "text",
+                "target": "extract", "fallback": "fb", "source": "summary",
+                "prompt": "p", "enabled": True,
+            },
+        ],
+    }
+    result = dump_profile(data)
+    # Isolate the [[fields]] block (first [[fields]] to end of its key list).
+    block_start = result.index("[[fields]]")
+    block = result[block_start:]
+    target_idx = block.index("target =")
+    enabled_idx = block.index("enabled =")
+    fallback_idx = block.index("fallback =")
+    source_idx = block.index("source =")
+    prompt_idx = block.index("prompt =")
+    assert target_idx < enabled_idx < fallback_idx
+    assert enabled_idx < source_idx
+    assert enabled_idx < prompt_idx

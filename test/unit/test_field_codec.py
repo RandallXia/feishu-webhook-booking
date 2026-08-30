@@ -308,3 +308,63 @@ def test_extract_bill_routing():
     # no overlap
     assert set(extract_fields) & set(bill_fields) == set()
     assert warnings == []
+
+
+# ─── enabled flag ──────────────────────────────────────────────────────────
+
+
+def test_disabled_spec_skipped_in_extract_and_bill():
+    """
+    GIVEN a FieldSpec with enabled=False alongside enabled=True specs
+    WHEN encode_fields is called
+    THEN the disabled spec's field is absent from both extract_fields AND bill_fields
+      AND no warning is emitted for the disabled spec
+    """
+    extraction = _make_extraction()
+    specs = [
+        FieldSpec(ai_key="summary", feishu_field="原始信息", type="text", target="extract"),
+        FieldSpec(ai_key="amount", feishu_field="金额", type="number", target="bill"),
+        FieldSpec(
+            ai_key="category", feishu_field="分类", type="single_select", target="extract",
+            fallback="其他", enabled=False,
+        ),
+    ]
+    extract_fields, bill_fields, warnings = encode_fields(extraction, specs, {})
+    assert "分类" not in extract_fields
+    assert "原始信息" in extract_fields
+    assert "金额" in bill_fields
+    assert not any("分类" in w for w in warnings)
+
+
+def test_disabled_single_select_skips_whitelist_check():
+    """
+    GIVEN a disabled single_select spec whose value is NOT in the whitelist
+       AND no valid fallback (would normally raise ValueError)
+    WHEN encode_fields is called
+    THEN NO ValueError is raised (the disabled `continue` precedes the whitelist check)
+      AND the field is absent from the output
+    """
+    extraction = _make_extraction(category="娱乐")
+    specs = [
+        FieldSpec(
+            ai_key="category", feishu_field="分类", type="single_select", target="extract",
+            fallback="未知", enabled=False,
+        ),
+    ]
+    whitelists = {"分类": {"餐饮", "交通", "其他"}}
+    extract_fields, bill_fields, warnings = encode_fields(extraction, specs, whitelists)
+    assert extract_fields == {}
+    assert bill_fields == {}
+    assert warnings == []
+
+
+def test_enabled_defaults_true():
+    """
+    GIVEN a FieldSpec constructed WITHOUT passing enabled
+    WHEN the spec is inspected
+    THEN spec.enabled is True (backward-compatible default)
+    """
+    spec = FieldSpec(
+        ai_key="summary", feishu_field="原始信息", type="text", target="extract",
+    )
+    assert spec.enabled is True

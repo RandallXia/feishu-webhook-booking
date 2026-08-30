@@ -28,6 +28,7 @@ _FIELD_KEY_ORDER = (
     "feishu_field",
     "type",
     "target",
+    "enabled",
     "fallback",
     "source",
     "prompt",
@@ -121,6 +122,7 @@ def dump_profile(profile: dict) -> str:
                     "feishu_field": str,
                     "type": str,
                     "target": str,
+                    "enabled": bool,        # omitted → defaults True on reparse
                     "fallback": str | None,   # omitted if None
                     "source": str | None,      # omitted if None
                     "prompt": str,

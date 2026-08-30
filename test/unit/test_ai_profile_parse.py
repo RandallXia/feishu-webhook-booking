@@ -259,6 +259,42 @@ def test_passthrough_without_summary_source_raises(tmp_path):
         parse_profile(path)
 
 
+# ─── enabled flag ──────────────────────────────────────────────────────────
+
+
+def test_explicit_enabled_false_parsed(tmp_path):
+    """
+    GIVEN a profile TOML where one [[fields]] entry has `enabled = false`
+    WHEN parse_profile is called
+    THEN that FieldSpec.enabled is False
+      AND other specs (without the key) default to enabled=True
+    """
+    bad = _VALID_PROFILE_TOML.replace(
+        'ai_key = "category"\nfeishu_field = "分类"',
+        'ai_key = "category"\nfeishu_field = "分类"\nenabled = false',
+    )
+    path = _write_profile(tmp_path, bad)
+    profile = parse_profile(path)
+    category = next(f for f in profile.fields if f.ai_key == "category")
+    assert category.enabled is False
+    # Other specs default to True
+    summary = next(f for f in profile.fields if f.ai_key == "summary")
+    assert summary.enabled is True
+
+
+def test_legacy_profile_without_enabled_defaults_all_true(tmp_path):
+    """
+    GIVEN a profile TOML where NO [[fields]] entry carries an `enabled` key
+       (the canonical legacy shape — golden compatibility lock)
+    WHEN parse_profile is called
+    THEN every FieldSpec.enabled is True (zero-break migration)
+    """
+    path = _write_profile(tmp_path, _VALID_PROFILE_TOML)
+    profile = parse_profile(path)
+    assert len(profile.fields) == 8
+    assert all(spec.enabled is True for spec in profile.fields)
+
+
 # ─── build_field_prompts — single_select option injection ──────────────────
 
 

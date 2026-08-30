@@ -431,3 +431,121 @@ async def test_extracted_dict_has_notification_fields():
     assert result.extracted["category"] == extraction.category
     assert result.extracted["flow_type"] == extraction.flow_type
     assert result.extracted["description"] == extraction.description
+
+
+# ─── enabled flag ──────────────────────────────────────────────────────────
+
+
+def _make_profile_with_disabled(disabled_key: str) -> AiProfile:
+    """Profile clone of _make_profile() with one FieldSpec.enabled=False.
+
+    Rebuilds the fields tuple so the spec for `disabled_key` is replaced with
+    an enabled=False variant — dataclass(frozen=True) prevents in-place mutation.
+    """
+    base = _make_profile()
+    new_fields = []
+    for spec in base.fields:
+        if spec.ai_key == disabled_key:
+            from dataclasses import replace as dc_replace
+            new_fields.append(dc_replace(spec, enabled=False))
+        else:
+            new_fields.append(spec)
+    return AiProfile(
+        prompt_header=base.prompt_header,
+        summary_field=base.summary_field,
+        bill_app_token=base.bill_app_token,
+        bill_table_id=base.bill_table_id,
+        fields=tuple(new_fields),
+    )
+
+
+async def test_disabled_category_omitted_from_create_record():
+    """
+    GIVEN a profile where the category spec has enabled=False
+    WHEN the pipeline runs
+    THEN the bill_fields passed to create_record do NOT contain the category key
+      AND ai_status == "succeeded"
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile_with_disabled("category")
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "succeeded"
+    bill_fields_arg = pipeline._feishu.create_record.call_args.args[0]
+    assert "分类" not in bill_fields_arg
+
+
+async def test_disabled_summary_skips_update_record_field():
+    """
+    GIVEN a profile where the summary spec has enabled=False
+    WHEN the pipeline runs
+    THEN feishu.update_record_field is NEVER called (zero invocations)
+      AND ai_status == "succeeded"
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile_with_disabled("summary")
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "succeeded"
+    assert pipeline._feishu.update_record_field.call_count == 0
+
+
+async def test_all_bill_fields_disabled_skips_create_record():
+    """
+    GIVEN a profile where EVERY target="bill" spec is disabled
+    WHEN the pipeline runs
+    THEN feishu.create_record is NEVER called
+      AND ai_status == "succeeded"
+      AND result.warnings contains "all bill fields disabled"
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    base = _make_profile()
+    new_fields = []
+    from dataclasses import replace as dc_replace
+    for spec in base.fields:
+        if spec.target == "bill":
+            new_fields.append(dc_replace(spec, enabled=False))
+        else:
+            new_fields.append(spec)
+    profile = AiProfile(
+        prompt_header=base.prompt_header,
+        summary_field=base.summary_field,
+        bill_app_token=base.bill_app_token,
+        bill_table_id=base.bill_table_id,
+        fields=tuple(new_fields),
+    )
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "succeeded"
+    assert pipeline._feishu.create_record.call_count == 0
+    assert any("all bill fields disabled" in w for w in result.warnings)
+
+
+async def test_disabled_category_omitted_from_extracted_dict():
+    """
+    GIVEN a profile where the category spec has enabled=False
+    WHEN the pipeline runs and result.extracted is inspected
+    THEN the `category` key is ABSENT from extracted
+      AND the other three keys (amount/flow_type/description) are present
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile_with_disabled("category")
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "succeeded"
+    assert "category" not in result.extracted
+    assert "amount" in result.extracted
+    assert "flow_type" in result.extracted
+    assert "description" in result.extracted

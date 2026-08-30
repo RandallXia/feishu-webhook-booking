@@ -211,7 +211,12 @@ class AiPipeline:
                 dedup_hit=False,
             )
 
-        if extract_fields:
+        # Defensive: the UI hard-locks the summary spec, but respect the
+        # enabled flag here too — a disabled summary spec must not write back.
+        summary_spec = next(
+            (s for s in profile.fields if s.target == "extract"), None
+        )
+        if extract_fields and summary_spec is not None and summary_spec.enabled:
             summary_value = extract_fields.get(profile.summary_field)
             if summary_value is not None:
                 try:
@@ -220,6 +225,23 @@ class AiPipeline:
                     )
                 except FeishuClientError as exc:
                     warnings.append(f"summary writeback failed: {exc}")
+
+        # Skip bill record creation entirely when every bill spec is disabled
+        # (or absent) — an empty bill_fields dict would otherwise create a
+        # blank Feishu record with only the client_token idempotency guard.
+        if not bill_fields:
+            warnings.append("all bill fields disabled — record not created")
+            logger.info(
+                "pipeline bill create skipped (all disabled) alias=%s",
+                target.alias,
+            )
+            return PipelineResult(
+                ai_status="succeeded",
+                bill_record_id=None,
+                warnings=warnings,
+                extracted=self._build_extracted(extraction, profile),
+                dedup_hit=False,
+            )
 
         client_token = "ai-bill-" + dedup_key[:40]
         try:
@@ -246,12 +268,7 @@ class AiPipeline:
         with self._dedup_lock:
             self._dedup[dedup_key] = time.time()
 
-        extracted = {
-            "amount": extraction.amount,
-            "category": extraction.category,
-            "flow_type": extraction.flow_type,
-            "description": extraction.description,
-        }
+        extracted = self._build_extracted(extraction, profile)
         logger.info(
             "pipeline ok alias=%s bill_record_id=%s warnings=%s",
             target.alias,
@@ -265,3 +282,21 @@ class AiPipeline:
             extracted=extracted,
             dedup_hit=False,
         )
+
+    @staticmethod
+    def _build_extracted(
+        extraction: ExtractionResult, profile: AiProfile
+    ) -> dict[str, object]:
+        """Build the notification dict, honoring per-field enabled flags.
+
+        The webhook response surfaces these four keys for the iPhone Shortcut
+        notification. A disabled field is dropped so the notification does not
+        show a stale value the user explicitly turned off.
+        """
+        spec_by_key = {s.ai_key: s for s in profile.fields}
+        extracted: dict[str, object] = {}
+        for key in ("amount", "category", "flow_type", "description"):
+            spec = spec_by_key.get(key)
+            if spec is None or spec.enabled:
+                extracted[key] = getattr(extraction, key)
+        return extracted

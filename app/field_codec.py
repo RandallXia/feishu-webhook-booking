@@ -37,6 +37,9 @@ class FieldSpec:
         fallback: Fallback value for single_select when value not in whitelist.
         prompt: Prompt description for this field (used by config, not encoding).
         source: Source field for passthrough type (e.g. "summary").
+        enabled: When False, encode_fields skips this spec entirely (per-field
+            toggle driven by the config UI). Defaults True for backward
+            compatibility with TOML profiles that predate the flag.
     """
     ai_key: str
     feishu_field: str
@@ -45,6 +48,7 @@ class FieldSpec:
     fallback: str | None = None
     prompt: str = ""
     source: str | None = None  # passthrough only, e.g. "summary"
+    enabled: bool = True
 
 
 def encode_fields(
@@ -72,6 +76,8 @@ def encode_fields(
     warnings: list[str] = []
 
     for spec in specs:
+        if not spec.enabled:
+            continue
         field_name = spec.feishu_field
         value: object = None
 
