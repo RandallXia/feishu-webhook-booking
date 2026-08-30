@@ -174,9 +174,10 @@ class AiPipeline:
             )
         except AiExtractorError as exc:
             logger.warning(
-                "pipeline ai extract failed alias=%s stage=%s",
+                "pipeline ai extract failed alias=%s stage=%s error=%s",
                 target.alias,
                 exc.stage,
+                exc,
             )
             return PipelineResult(
                 ai_status="failed",
