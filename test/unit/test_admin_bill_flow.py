@@ -620,6 +620,70 @@ def test_admin_js_ai_keys_constant_has_eight_elements():
     ]
 
 
+def test_admin_html_extract_section_has_summary_field_select():
+    """
+    GIVEN app/static/admin.html (split field mapping: summary → extract section)
+    WHEN the source is scanned
+    THEN the extract-section contains id="summary-field-select" (the dropdown
+       that configures the sole target=extract field against the extract-table
+       field list, moved out of the bill mapping table to prevent cross-table
+       field mismatches)
+    """
+    html = _read_static("admin.html")
+    assert 'id="summary-field-select"' in html, (
+        "admin.html missing summary-field-select dropdown in extract-section"
+    )
+
+
+def test_admin_js_exposes_load_extract_fields_function():
+    """
+    GIVEN app/static/admin.js (split field mapping: summary → extract section)
+    WHEN the source is scanned for the function that populates the
+       extract-section summary dropdown
+    THEN it contains a function declaration for loadExtractFields (fetches the
+       extract-table field list via GET /admin/feishu/fields and fills
+       #summary-field-select, mirroring billLoadFields for the bill table)
+    """
+    js = _read_static("admin.js")
+    pattern = r"function\s+loadExtractFields\s*\("
+    assert re.search(pattern, js), "admin.js missing function declaration: loadExtractFields"
+
+
+def test_admin_js_render_bill_rows_skips_summary():
+    """
+    GIVEN app/static/admin.js (split field mapping: bill table shows 7 rows)
+    WHEN the renderBillRows function body is scanned
+    THEN it skips the summary key in the AI_KEYS render loop (summary is
+       rendered in the extract-section dropdown, not the bill mapping table),
+       so the bill table shows only the 7 bill-target fields
+    """
+    js = _read_static("admin.js")
+    m = re.search(r"function\s+renderBillRows\s*\([^)]*\)\s*\{", js)
+    assert m, "renderBillRows function not found"
+    # Slice from renderBillRows start to the next sibling function definition.
+    start = m.end()
+    rest = js[start:]
+    end_m = re.search(r"\n\s{2}function\s+\w+\s*\(", rest)
+    body = rest[: end_m.start()] if end_m else rest
+    assert "summary" in body, "renderBillRows body does not reference summary"
+    skip_re = re.compile(r"if\s*\(\s*key\s*===\s*['\"]summary['\"]\s*\)\s*continue\s*;?")
+    assert skip_re.search(body), (
+        "renderBillRows missing `if (key === 'summary') continue;` skip clause"
+    )
+
+
+def test_admin_js_bill_matched_count_denominator_is_seven():
+    """
+    GIVEN app/static/admin.js (bill mapping table now shows 7 rows, not 8)
+    WHEN the billUpdateMatchedCount function body is scanned
+    THEN the matched-count denominator is 7 (summary is counted in the
+       extract-section dropdown, not the bill mapping table)
+    """
+    js = _read_static("admin.js")
+    assert "/7" in js, "admin.js missing /7 matched-count denominator"
+    assert "/8" not in js, "admin.js still references the old /8 denominator"
+
+
 def test_admin_js_auto_derive_uses_heuristic_keywords():
     """
     GIVEN admin.js autoDerive function

@@ -412,8 +412,21 @@
   var saveTargetsBtn = document.getElementById('save-targets-btn');
   var addAliasBtn = document.getElementById('add-alias-btn');
   var extractBanner = document.getElementById('extract-banner');
+  var extractFieldSelect = document.getElementById('summary-field-select');
   var extractBaseGeneration = 0;
   var extractDefaultAlias = '';
+  // Last-known extract-table (app_token, table_id) of the default alias — used
+  // to (re)fetch the extract-table field list that populates #summary-field-select.
+  var extractDefaultTarget = { app_token: '', table_id: '' };
+  // summary's prompt is preserved across GET→PUT without a UI input (the
+  // extract section stays focused on the single field dropdown). Loaded from
+  // the profile's summary entry on GET, sent back verbatim on PUT.
+  var summaryPromptCache = '';
+  var extractCachedFields = [];
+  // Last summary_field value loaded from the profile that has not yet been
+  // painted into the dropdown (e.g. fields list still loading). Consumed and
+  // cleared the moment loadExtractFields repopulates the <select>.
+  var pendingSummaryField = '';
   // Cap record-picker pagination so a huge table cannot stall the browser.
   var RECORD_PICKER_MAX_PAGES = 5;
 
@@ -791,6 +804,92 @@
     });
   }
 
+  // GET /admin/feishu/fields for the extract table (default-alias app_token +
+  // table_id) → populate #summary-field-select. The summary field is the sole
+  // target=extract mapping, so it lives in the extract section, not the bill
+  // mapping table. After populating, pre-select pendingSummaryField (a value
+  // loaded from the profile before the fields list arrived) and, if none was
+  // loaded, auto-derive a candidate from the 精简/摘要 heuristic. Mirrors
+  // billLoadFields' cache + error-toast pattern.
+  function loadExtractFields(appToken, tableId) {
+    if (!extractFieldSelect) return Promise.resolve([]);
+    while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
+    if (!appToken || !tableId) {
+      extractFieldSelect.appendChild(el('option', { value: '' }, '— 未选择提取表 / No extract table —'));
+      extractFieldSelect.disabled = true;
+      return Promise.resolve([]);
+    }
+    extractFieldSelect.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    extractFieldSelect.disabled = true;
+    return api('/admin/feishu/fields?app_token=' + encodeURIComponent(appToken) +
+      '&table_id=' + encodeURIComponent(tableId)).then(function(data) {
+      extractCachedFields = data.fields || [];
+      while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
+      extractFieldSelect.appendChild(el('option', { value: '' }, '— 选择字段 / Select field —'));
+      for (var i = 0; i < extractCachedFields.length; i++) {
+        var f = extractCachedFields[i] || {};
+        extractFieldSelect.appendChild(el('option', { value: f.name || '' }, f.name || ''));
+      }
+      var pick = pendingSummaryField;
+      if (!pick) {
+        // auto-derive: first field whose name contains 精简 or 摘要.
+        for (var d = 0; d < extractCachedFields.length; d++) {
+          var nm = (extractCachedFields[d] && extractCachedFields[d].name) || '';
+          if (nm.indexOf('精简') !== -1 || nm.indexOf('摘要') !== -1) { pick = nm; break; }
+        }
+      }
+      if (pick) {
+        var has = false;
+        for (var c = 0; c < extractFieldSelect.options.length; c++) {
+          if (extractFieldSelect.options[c].value === pick) { has = true; break; }
+        }
+        if (!has) {
+          extractFieldSelect.insertBefore(el('option', { value: pick }, pick + '（提取表）'),
+            extractFieldSelect.options[1] || null);
+        }
+        extractFieldSelect.value = pick;
+      }
+      pendingSummaryField = '';
+      extractFieldSelect.disabled = false;
+      return extractCachedFields;
+    }).catch(function(err) {
+      while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
+      extractFieldSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
+      if (extractBanner) showBanner(extractBanner, 'err',
+        (err && err.message) || '加载提取表字段失败 / Load extract fields failed');
+      return [];
+    });
+  }
+
+  // Resolve the default-alias extract target from GET /admin/config/targets,
+  // then fetch its fields. Called on init and after a targets save (the
+  // default alias may have moved). Stores the resolved target in
+  // extractDefaultTarget so billGetSummaryField/billGatherBody can reach the
+  // same app_token/table_id if needed.
+  function refreshExtractFields() {
+    return api('/admin/config/targets').then(function(data) {
+      var targets = data.targets || [];
+      var def = extractDefaultAlias || data.default_alias || '';
+      var found = null;
+      for (var i = 0; i < targets.length; i++) {
+        if (targets[i] && targets[i].alias === def) { found = targets[i]; break; }
+      }
+      if (!found && targets.length) found = targets[0];
+      if (!found) {
+        extractDefaultTarget = { app_token: '', table_id: '' };
+        return loadExtractFields('', '');
+      }
+      extractDefaultTarget = { app_token: found.app_token || '', table_id: found.table_id || '' };
+      return loadExtractFields(extractDefaultTarget.app_token, extractDefaultTarget.table_id);
+    }).catch(function() {
+      return loadExtractFields('', '');
+    });
+  }
+
+  if (extractFieldSelect) extractFieldSelect.addEventListener('change', function() {
+    markDirty();
+  });
+
   if (saveTargetsBtn) saveTargetsBtn.addEventListener('click', function() {
     if (!extractBanner) return;
     saveTargetsBtn.disabled = true;
@@ -806,6 +905,8 @@
       showBanner(extractBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
       refreshStatus();
       loadExtractTargets();
+      // Default-alias extract table may have changed → repopulate summary dropdown.
+      refreshExtractFields();
     }).catch(function(err) {
       var status = err && err.status;
       var detail = err && err.body && err.body.detail;
@@ -1075,6 +1176,10 @@
     var derived = autoDerive(fields || []);
     for (var i = 0; i < AI_KEYS.length; i++) {
       var key = AI_KEYS[i];
+      // summary is rendered in the extract-section dropdown (#summary-field-
+      // select), not the bill mapping table. Skip it here so the table shows
+      // only the 7 bill-target fields. AI_KEYS stays 8 elements (parity lock).
+      if (key === 'summary') continue;
       var existing = billExistingFields[key];
       var prefilled = derived[key];
       var spec;
@@ -1140,7 +1245,8 @@
       if (ffSel && ffSel.value && cb && cb.checked) n++;
     }
     while (countEl.firstChild) countEl.removeChild(countEl.firstChild);
-    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/8 · Matched'));
+    // 7 = bill-target fields only; summary lives in the extract-section dropdown.
+    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/7 · Matched'));
   }
 
   // Render the two token badges (app_token / table_id) into #bill-tokens.
@@ -1380,6 +1486,22 @@
   function billGatherBody() {
     var rows = billFieldsList.querySelectorAll('.bill-row');
     var fields = [];
+    // summary is the sole target=extract mapping; it lives in the extract-
+    // section dropdown, not the bill mapping table. Reconstruct its spec here
+    // so the PUT body still carries all 8 AI_KEYS (server expects summary).
+    // prompt is preserved from the last GET (summaryPromptCache), not edited
+    // in the UI — see MUST NOT in the refactor brief.
+    var summaryField = billGetSummaryField();
+    fields.push({
+      ai_key: 'summary',
+      feishu_field: summaryField || null,
+      type: 'passthrough',
+      target: 'extract',
+      fallback: null,
+      prompt: summaryPromptCache || null,
+      source: 'summary',
+      enabled: true,
+    });
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var aiKey = r.getAttribute('data-ai-key');
@@ -1388,11 +1510,10 @@
       var fbSel = r.querySelector('.fallback-select');
       var pInput = r.querySelector('.prompt-input');
       var cb = r.querySelector('.enable-toggle');
-      var target = aiKey === 'summary' ? 'extract' : 'bill';
-      var source = (aiKey === 'summary' || aiKey === 'raw_source') ? 'summary' : null;
+      var target = 'bill';
+      var source = aiKey === 'raw_source' ? 'summary' : null;
       var fb = (typeSel.value === 'single_select' && fbSel.value) ? fbSel.value : null;
-      // summary is hard-locked on; ignore the DOM checkbox for it.
-      var enabled = aiKey === 'summary' ? true : (cb ? cb.checked : true);
+      var enabled = cb ? cb.checked : true;
       fields.push({
         ai_key: aiKey,
         feishu_field: ffSel.value || null,
@@ -1407,7 +1528,7 @@
     return {
       profile: {
         prompt_header: billPromptHeader ? billPromptHeader.value : '',
-        summary_field: billGetSummaryField(),
+        summary_field: summaryField,
         bill: {
           app_token: billAppTokenInput ? billAppTokenInput.value.trim() : '',
           table_id: billTableIdInput ? billTableIdInput.value.trim() : '',
@@ -1418,14 +1539,12 @@
     };
   }
 
-  // The summary row's feishu_field selection IS summary_field. Read it from
-  // the summary row's <select> so the two stay in sync without a hidden input.
+  // summary_field now lives in the extract-section dropdown
+  // (#summary-field-select); the bill mapping table no longer renders a
+  // summary row. Read the value from that dropdown so PUT stays in sync.
   function billGetSummaryField() {
-    if (!billFieldsList) return '';
-    var summaryRow = billFieldsList.querySelector('.bill-row[data-ai-key="summary"]');
-    if (!summaryRow) return '';
-    var sel = summaryRow.querySelector('.feishu-field-select');
-    return sel ? sel.value : '';
+    if (extractFieldSelect) return extractFieldSelect.value || '';
+    return '';
   }
 
   function loadBillProfile() {
@@ -1448,13 +1567,24 @@
       if (billAppTokenInput) billAppTokenInput.value = (data.bill && data.bill.app_token) || '';
       if (billTableIdInput) billTableIdInput.value = (data.bill && data.bill.table_id) || '';
       billRenderTokens();
+      // summary_field → extract-section dropdown. Stash the loaded value as
+      // pending so refreshExtractFields() can pre-select it once the extract-
+      // table fields list arrives. Cache summary's prompt for PUT round-trip
+      // (no UI prompt input in the extract section).
+      pendingSummaryField = data.summary_field || '';
+      summaryPromptCache = '';
       // Build the per-key existing-field map so a re-render preserves loaded
-      // config rather than resetting.
+      // config rather than resetting. summary is skipped (render loop skips
+      // it too) but its prompt is cached above for the PUT round-trip.
       billExistingFields = {};
       var fields = data.fields || [];
       for (var i = 0; i < fields.length; i++) {
         var f = fields[i];
         if (f && f.ai_key) {
+          if (f.ai_key === 'summary') {
+            summaryPromptCache = f.prompt || '';
+            continue;
+          }
           billExistingFields[f.ai_key] = {
             feishu_field: f.feishu_field || '',
             type: f.type || 'text',
@@ -1464,6 +1594,9 @@
           };
         }
       }
+      // Populate the extract-section summary dropdown from the default-alias
+      // extract table. Runs in parallel with the bill-table fields fetch below.
+      refreshExtractFields();
       // If the bill table is already configured, fetch its fields so the
       // feishu_field <select>s carry real options. Also populate the table
       // list so the table-select is enabled + shows the current table.
@@ -1872,6 +2005,7 @@
   loadToken();
   refreshStatus();
   loadExtractTargets();
+  refreshExtractFields();
   loadBillProfile();
   loadEnv();
 })();

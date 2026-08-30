@@ -90,6 +90,13 @@
     <div id="targets-list">
       <p class="placeholder">点击"新增账本"或加载现有账本 / Click "Add Alias" or load existing aliases</p>
     </div>
+    <!-- 摘要字段：唯一 target=extract 的字段映射，从选定提取表字段列表填充 / The single
+         target=extract field mapping; populated from the selected extract table's fields -->
+    <div class="form-group" id="summary-field-group">
+      <label for="summary-field-select">摘要字段 / Summary Field</label>
+      <div class="hint">提取表的「精简原始数据」回写字段 / Extract-table writeback field for 精简原始数据</div>
+      <select id="summary-field-select" class="table-select" disabled></select>
+    </div>
   </div>
 
   <!-- Bill-table config section (todo 3 — table + per-field toggles) -->
@@ -110,7 +117,7 @@
     <div class="bill-tokens" id="bill-tokens"></div>
     <!-- 匹配计数 + 重新推导链接 -->
     <div class="bill-table-header">
-      <span id="bill-matched-count">已匹配 0/8 · Matched</span>
+      <span id="bill-matched-count">已匹配 0/7 · Matched</span>
       <a href="#" class="bill-derive-link" id="bill-derive-btn">重新推导 / Re-derive</a>
     </div>
     <!-- 8 行映射表格 -->

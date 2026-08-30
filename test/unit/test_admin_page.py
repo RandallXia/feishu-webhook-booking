@@ -90,6 +90,10 @@ async def test_admin_html_references_static_assets():
     assert 'id="ai-connection-section"' in body
     assert 'id="extract-section"' in body
     assert 'id="bill-section"' in body
+    # Summary-field dropdown lives in extract-section (split field mapping):
+    # summary is the sole target=extract field, so it is configured against the
+    # extract-table field list, not the bill mapping table.
+    assert 'id="summary-field-select"' in body
 
 
 async def test_admin_css_asset_served_200():
