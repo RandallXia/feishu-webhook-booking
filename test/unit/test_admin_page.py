@@ -147,3 +147,22 @@ def test_admin_js_node_check_passes():
         f"node --check failed (exit {result.returncode}):\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+async def test_get_favicon_returns_svg():
+    """
+    GIVEN the FastAPI app is running
+    WHEN GET /admin/ai/assets/favicon.svg is requested
+    THEN the response status is 200
+      AND the content-type contains svg
+      AND the body contains the Feishu brand blue #3370ff
+    """
+    async with lifespan(app):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app), base_url=TEST_BASE_URL
+        ) as client:
+            response = await client.get("/admin/ai/assets/favicon.svg")
+
+    assert response.status_code == 200
+    assert "svg" in response.headers.get("content-type", "")
+    assert b"#3370ff" in response.content
