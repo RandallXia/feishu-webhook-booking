@@ -77,6 +77,46 @@ def _build_tool_properties(field_prompts: dict[str, str]) -> dict[str, dict[str,
     }
 
 
+def _extract_json_from_text(text: str) -> dict | None:
+    """Best-effort JSON extraction from a plain-text AI response.
+
+    Handles: raw JSON, JSON in ```json fences, JSON embedded in prose.
+    Returns None if no valid JSON object found.
+    """
+    text = text.strip()
+
+    # 1. Try direct JSON parse
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2. Try ```json fenced block
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
+    if fence_match:
+        try:
+            obj = json.loads(fence_match.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 3. Try first {...} block in the text
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        try:
+            obj = json.loads(text[brace_start:brace_end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
+
+
 def _validate_input(raw: dict) -> ExtractionResult:
     missing = [k for k in _REQUIRED_KEYS if k not in raw]
     if missing:
@@ -218,10 +258,24 @@ class AiExtractor:
         try:
             content = data["content"]
             tool_input = None
+            # First: look for a tool_use block (preferred path)
             for item in content:
                 if item.get("type") == "tool_use":
                     tool_input = item.get("input")
                     break
+
+            # Fallback: some relays strip tool_choice — the model returns
+            # plain text instead of a tool_use block. Try to extract JSON
+            # from the text content as a degraded parse path.
+            if not isinstance(tool_input, dict):
+                text_content = ""
+                for item in content:
+                    if item.get("type") == "text":
+                        text_content = item.get("text", "")
+                        break
+                if text_content:
+                    tool_input = _extract_json_from_text(text_content)
+
             if not isinstance(tool_input, dict):
                 raise AiExtractorError(
                     "Anthropic response missing tool_use item with input",
@@ -301,31 +355,42 @@ class AiExtractor:
 
         try:
             data = response.json()
-            tool_call = data["choices"][0]["message"]["tool_calls"][0]
-            arguments = tool_call["function"]["arguments"]
+            message = data["choices"][0]["message"]
+            tool_calls = message.get("tool_calls")
+
+            if tool_calls and len(tool_calls) > 0:
+                # Preferred path: tool_calls present
+                arguments = tool_calls[0]["function"]["arguments"]
+                if not isinstance(arguments, str):
+                    raise AiExtractorError(
+                        f"OpenAI tool arguments is not a string: {type(arguments).__name__}",
+                        stage="parse",
+                    )
+                tool_input = json.loads(arguments)
+            else:
+                # Fallback: some relays strip tool_choice — the model returns
+                # plain text instead of tool_calls. Try to extract JSON
+                # from the message content as a degraded parse path.
+                content = message.get("content", "")
+                if not content:
+                    raise AiExtractorError(
+                        "OpenAI response missing tool_calls and content",
+                        stage="parse",
+                    )
+                tool_input = _extract_json_from_text(content)
+                if not isinstance(tool_input, dict):
+                    raise AiExtractorError(
+                        "OpenAI response missing tool_calls item with valid function call",
+                        stage="parse",
+                    )
         except (KeyError, TypeError, IndexError) as exc:
             raise AiExtractorError(
                 f"Unexpected OpenAI response shape: {exc}", stage="parse"
             ) from exc
-
-        if not isinstance(arguments, str):
-            raise AiExtractorError(
-                f"OpenAI tool arguments is not a string: {type(arguments).__name__}",
-                stage="parse",
-            )
-
-        try:
-            tool_input = json.loads(arguments)
         except json.JSONDecodeError as exc:
             raise AiExtractorError(
                 f"Failed to parse OpenAI tool arguments JSON: {exc}", stage="parse"
             ) from exc
-
-        if not isinstance(tool_input, dict):
-            raise AiExtractorError(
-                f"OpenAI tool arguments did not decode to an object: {type(tool_input).__name__}",
-                stage="parse",
-            )
 
         elapsed_ms = int((time.time() - start) * 1000)
         logger.info(
