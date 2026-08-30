@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 配置管理 / AI Config Admin</title>
+<link rel="icon" type="image/svg+xml" href="/admin/ai/assets/favicon.svg">
+<link rel="stylesheet" href="/admin/ai/assets/admin.css">
+</head>
+<body>
+<div class="container">
+  <h1>AI 配置管理</h1>
+  <p class="subtitle">AI Config Admin — 配置浏览与编辑 / Config viewer & editor</p>
+
+  <!-- Token card (sticky) -->
+  <div class="card" id="token-card">
+    <div class="card-title">管理令牌 / Admin Token</div>
+    <div class="form-group">
+      <label for="token-input">X-Admin-Token</label>
+      <div class="hint">令牌仅存于本机浏览器 localStorage，不会发送到页面以外的位置 / Stored in browser localStorage only</div>
+      <input type="text" id="token-input" placeholder="X-Admin-Token" />
+    </div>
+  </div>
+
+  <!-- Status bar (generation / config_valid / last_reload_error) -->
+  <div id="status-bar" class="bar-info">状态加载中 / Loading status...</div>
+
+  <!-- Profile card (existing viewer — migrated verbatim) -->
+  <div class="card">
+    <div class="card-title">配置概览 / Profile Overview</div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="load-profile-btn">加载配置 / Load Profile</button>
+    </div>
+    <div id="profile-panel">
+      <p class="placeholder">点击"加载配置"查看当前 AI 配置 / Click "Load Profile" to view AI config</p>
+    </div>
+  </div>
+
+  <!-- AI connection section (todo 4 — grid + collapsible deployment info) -->
+  <div class="card" id="ai-connection-section">
+    <div class="card-title">AI 连接 / AI Connection</div>
+    <div id="env-banner"></div>
+    <div id="restart-banner" class="bar-warn" style="display:none;"></div>
+    <div class="ai-grid">
+      <!-- provider/base_url 一行，model/timeout 一行，API Key 全宽 -->
+      <div class="form-group">
+        <label for="ai-provider-select">提供商 / Provider</label>
+        <select id="ai-provider-select">
+          <option value="">— 未设置 / Unset —</option>
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="ai-base-url-input">base_url</label>
+        <input type="text" id="ai-base-url-input" placeholder="留空使用官方 / Leave empty for official endpoint" />
+      </div>
+      <div class="form-group">
+        <label for="ai-model-input">模型 / Model</label>
+        <input type="text" id="ai-model-input" placeholder="如 claude-3-5-sonnet / e.g. gpt-4o" />
+      </div>
+      <div class="form-group">
+        <label for="ai-timeout-input">超时 / Timeout (秒)</label>
+        <input type="number" id="ai-timeout-input" min="1" placeholder="20" />
+      </div>
+      <div class="form-group ai-grid-full">
+        <label for="ai-api-key-input">API Key</label>
+        <input type="password" id="ai-api-key-input" autocomplete="off" />
+        <div class="hint" id="ai-api-key-hint"></div>
+      </div>
+    </div>
+    <details class="env-details">
+      <summary>部署信息 / Deployment Info</summary>
+      <div id="env-other-list"></div>
+    </details>
+    <div class="ai-save-bar">
+      <button class="btn btn-primary" id="save-env-btn">保存 AI 连接 / Save</button>
+      <span class="hint">重启后生效 / Restart required</span>
+    </div>
+  </div>
+
+  <!-- Extract-table config section (todo 9) -->
+  <div class="card" id="extract-section">
+    <div class="card-title">提取表配置 / Extract Table Config</div>
+    <div id="extract-banner"></div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="save-targets-btn">保存全部账本 / Save All</button>
+      <button class="btn btn-secondary" id="add-alias-btn">➕ 新增账本 / Add Alias</button>
+    </div>
+    <div id="targets-list">
+      <p class="placeholder">点击"新增账本"或加载现有账本 / Click "Add Alias" or load existing aliases</p>
+    </div>
+    <!-- 摘要字段：唯一 target=extract 的字段映射，从选定提取表字段列表填充 / The single
+         target=extract field mapping; populated from the selected extract table's fields -->
+    <div class="form-group" id="summary-field-group">
+      <label for="summary-field-select">摘要字段 / Summary Field</label>
+      <div class="hint">提取表的「精简原始数据」回写字段 / Extract-table writeback field for 精简原始数据</div>
+      <select id="summary-field-select" class="table-select" disabled></select>
+    </div>
+  </div>
+
+  <!-- Bill-table config section (todo 3 — table + per-field toggles) -->
+  <div class="card" id="bill-section">
+    <div class="card-title">账单表配置 / Bill Table Config</div>
+    <div id="bill-banner"></div>
+    <!-- 步行栏：URL→解析→表选择一行 flex -->
+    <div class="bill-step-row">
+      <input type="text" id="bill-url-input" class="url-input" placeholder="https://xxx.feishu.cn/base/{app_token}?table={table_id}" />
+      <button class="btn btn-secondary" id="bill-parse-btn" type="button">解析 / Parse</button>
+      <select id="bill-table-select" class="table-select" disabled></select>
+      <button class="btn btn-secondary" id="bill-load-tables-btn" type="button">加载表 / Load</button>
+      <div class="parse-status"></div>
+      <div class="table-status"></div>
+      <input type="hidden" id="bill-app-token-input" />
+      <input type="hidden" id="bill-table-id-input" />
+    </div>
+    <div class="bill-tokens" id="bill-tokens"></div>
+    <!-- 匹配计数 + 重新推导链接 + 当前表名 -->
+    <div class="bill-table-header">
+      <span id="bill-table-name" class="bill-table-name"></span>
+      <span id="bill-matched-count">已匹配 0/7 · Matched</span>
+      <a href="#" class="bill-derive-link" id="bill-derive-btn">重新推导 / Re-derive</a>
+    </div>
+    <!-- 8 行映射表格 -->
+    <div class="bill-table-wrap">
+      <table class="bill-table">
+        <thead><tr>
+          <th class="col-enable">启用</th><th class="col-aikey">AI 字段</th>
+          <th class="col-feishu">飞书字段</th><th class="col-type">类型</th>
+          <th class="col-fallback">回退</th><th class="col-prompt">提示词</th>
+        </tr></thead>
+        <tbody id="bill-fields-list"></tbody>
+      </table>
+      <div class="bill-error-row" id="bill-error-row" style="display:none;"></div>
+    </div>
+    <!-- prompt_header 移到表格下方 -->
+    <div class="form-group" style="margin-top:16px;">
+      <label for="prompt-header">全局提示词 / Prompt Header</label>
+      <div class="hint">位于所有字段提示词之前 / Prepended to every field prompt</div>
+      <textarea id="prompt-header" rows="2" placeholder="你是一个账单提取助手 / You are a bill extraction assistant"></textarea>
+    </div>
+    <div class="bill-save-bar">
+      <button class="btn btn-primary" id="save-profile-btn">保存配置 / Save Profile</button>
+    </div>
+  </div>
+
+  <!-- Test card (existing dry-run — migrated verbatim) -->
+  <div class="card">
+    <div class="card-title">提示词测试 / Prompt Tester</div>
+    <div class="form-group">
+      <label for="test-text">样本 OCR 文本 / Sample OCR Text</label>
+      <textarea id="test-text" placeholder="输入 OCR 文本进行提取测试 / Enter OCR text for extraction test">麦当劳 ¥42 微信支付 2026-08-28</textarea>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <button class="btn btn-primary" id="test-prompt-btn">测试提取 / Test Prompt</button>
+    </div>
+    <div id="result-panel">
+      <p class="placeholder">测试结果将显示在这里 / Test results will appear here</p>
+    </div>
+  </div>
+</div>
+
+<script src="/admin/ai/assets/admin.js"></script>
+</body>
+</html>

@@ -73,6 +73,16 @@ class Settings:
     feishu_targets_file: Path | None
     target_reload_interval_seconds: int
     config_reload_token: str | None
+    ai_enabled: bool
+    ai_provider: str | None
+    ai_base_url: str | None
+    ai_api_key: str | None
+    ai_model: str | None
+    ai_timeout_seconds: int
+    ai_profile_file: Path | None
+    ai_profile_reload_interval_seconds: int
+    ai_dedup_ttl_seconds: int
+    env_file_path: Path | None
 
 
 def _require_env(name: str) -> str:
@@ -99,6 +109,13 @@ def _int_env(name: str, default: int) -> int:
     return value
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _path_env(name: str) -> Path | None:
     raw_value = _optional_env(name)
     if not raw_value:
@@ -122,6 +139,26 @@ def get_settings() -> Settings:
         feishu_table_id = _optional_env("FEISHU_TABLE_ID")
         feishu_record_id = _optional_env("FEISHU_RECORD_ID")
 
+    ai_enabled = _bool_env("AI_ENABLED", default=False)
+    if ai_enabled:
+        ai_provider = _require_env("AI_PROVIDER")
+        if ai_provider not in ("anthropic", "openai"):
+            raise RuntimeError(
+                f"AI_PROVIDER must be 'anthropic' or 'openai', got: {ai_provider}"
+            )
+        ai_api_key = _require_env("AI_API_KEY")
+        ai_model = _require_env("AI_MODEL")
+        ai_profile_file = _path_env("AI_PROFILE_FILE")
+        if ai_profile_file is None:
+            raise RuntimeError("AI_PROFILE_FILE is required when AI_ENABLED=true")
+        ai_base_url = _optional_env("AI_BASE_URL")
+    else:
+        ai_provider = None
+        ai_api_key = None
+        ai_model = None
+        ai_base_url = None
+        ai_profile_file = None
+
     return Settings(
         host=os.getenv("HOST", "0.0.0.0").strip() or "0.0.0.0",
         port=_int_env("PORT", 2398),
@@ -139,4 +176,32 @@ def get_settings() -> Settings:
         feishu_targets_file=feishu_targets_file,
         target_reload_interval_seconds=_int_env("FEISHU_TARGET_RELOAD_INTERVAL_SECONDS", 10),
         config_reload_token=_optional_env("CONFIG_RELOAD_TOKEN"),
+        ai_enabled=ai_enabled,
+        ai_provider=ai_provider,
+        ai_base_url=ai_base_url,
+        ai_api_key=ai_api_key,
+        ai_model=ai_model,
+        ai_timeout_seconds=_int_env("AI_TIMEOUT_SECONDS", 20),
+        ai_profile_file=ai_profile_file,
+        ai_profile_reload_interval_seconds=_int_env("AI_PROFILE_RELOAD_INTERVAL_SECONDS", 10),
+        ai_dedup_ttl_seconds=_int_env("AI_DEDUP_TTL_SECONDS", 300),
+        env_file_path=_detect_env_file_path(),
     )
+
+
+def _detect_env_file_path() -> Path | None:
+    """Resolve the env file backing the running Settings, or None.
+
+    Precedence: FEISHU_ENV_FILE (if set AND the file exists on disk) →
+    PROJECT_ROOT/.env (if it exists) → None. Existence-gated so the admin
+    UI can distinguish "env vars set directly, no file to edit" (None → 409
+    ENV_FILE_NOT_FOUND) from "file is editable". Does NOT re-load the file —
+    _load_runtime_env_files already did that at import time.
+    """
+    external = _path_env("FEISHU_ENV_FILE")
+    if external is not None and external.is_file():
+        return external
+    root_env = PROJECT_ROOT / ".env"
+    if root_env.is_file():
+        return root_env
+    return None

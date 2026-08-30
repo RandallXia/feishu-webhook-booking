@@ -35,12 +35,21 @@
 - [架构说明](docs/architecture.md)
 - [Shortcut 配置](docs/shortcut-setup.md)
 - [飞书配置](docs/feishu-setup.md)
+- [AI 提取管线](docs/ai-pipeline.md)
 - [排障指南](docs/troubleshooting.md)
 - [发布核对](docs/release-checklist.md)
 - [迁移复盘](docs/retrospective.md)
 - [部署总览](docs/deployment/README.md)
 
 英文对应文档都放在 [docs/en/](docs/en/)。
+
+## AI 提取管线 / AI extraction pipeline
+
+当 `AI_ENABLED=true` 时，服务在写入 `原始信息` 之后接管飞书原「AI 自动填充」的职责：用自托管 AI 模型对 OCR 文本做一次结构化提取，回写 `精简原始数据`，并在「账单明细」表新建一条记录。配额由你自己的 AI 供应商管理，不再受飞书月度上限限制。配置可通过网页界面完成（`/admin/ai`），详见 [AI 提取管线文档](docs/ai-pipeline.md) 第 12 节。
+
+When `AI_ENABLED=true`, the service takes over Feishu's "AI auto-fill" after writing `原始信息`: a single structured AI call extracts bill fields from the OCR text, writes back `精简原始数据`, and creates a new record in the 账单明细 table. Quota is governed by your own AI provider, not Feishu's monthly cap. Configuration can be done via the web UI (`/admin/ai`); see section 12 of the [AI pipeline docs](docs/ai-pipeline.md).
+
+详细配置、迁移清单、TOML schema、管理端点见 [docs/ai-pipeline.md](docs/ai-pipeline.md)（英文：[docs/en/ai-pipeline.md](docs/en/ai-pipeline.md)）。
 
 ## 运行模式
 
@@ -97,7 +106,13 @@
 - `FEISHU_TARGET_RELOAD_INTERVAL_SECONDS`
 - `CONFIG_RELOAD_TOKEN`（可选）
 
+AI 提取管线配置（可选，默认关闭）：
+
+- `AI_ENABLED`（默认 `false`；开启后 `AI_PROVIDER` / `AI_API_KEY` / `AI_MODEL` / `AI_PROFILE_FILE` 变为必填）
+- 其余 `AI_*` 变量及 `AI_BASE_URL` 拼接规则见 [docs/ai-pipeline.md](docs/ai-pipeline.md)
+
 动态目标文件模板在 [runtime/feishu-targets.toml.example](runtime/feishu-targets.toml.example)。
+AI profile 模板在 [runtime/ai-profile.toml.example](runtime/ai-profile.toml.example)。
 
 ## 本地启动
 

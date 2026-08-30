@@ -6,8 +6,6 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
-test/
-requirements-dev.txt
 
 # Runtime secrets and local config / 运行时敏感文件与本地配置
 .env
