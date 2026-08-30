@@ -402,7 +402,40 @@ When the `runtime/` volume is mounted read-only (`docker-compose.yml` defaults t
 - `GET /admin/config/env` — 读取 AI 连接设置（密钥只返回 `*_set` 布尔，永不返回值）
 - `PUT /admin/config/env` — 按行编辑 env 文件（保留注释 + 非 AI 行；无文件 → 409 `ENV_FILE_NOT_FOUND`）
 
-- `GET /admin/feishu/tables` — list bitables under a given app_token
+## 13. 字段启用开关 / Field enable toggle
+
+每个 `[[fields]]` 行支持一个可选的 `enabled` 布尔键，用于在配置界面里单独控制某个字段是否写入飞书。这是纯展示层的开关——不影响 AI 提取的固定 schema，只影响结果是否落地。
+
+Each `[[fields]]` entry supports an optional `enabled` boolean key that controls, per field from the config UI, whether its value is written to Feishu. This is a presentation-layer toggle only — it does not change the AI extraction's fixed schema, only whether the result is persisted.
+
+### 语义 / Semantics
+
+- **禁用 ≠ 停止提取**：AI 模型仍然按固定 schema 提取全部 7 字段（保证 schema 稳定、便于重新启用），但被禁用字段的提取结果在 `encode_fields` 阶段被丢弃，不会进入 `extract_fields` / `bill_fields`，因此不会写入飞书。重新启用即恢复写入，无需重跑 AI。
+- **summary 行（`target="extract"`）**：核心写回字段（回写「精简原始数据」），UI 硬锁定为常开、不可禁用。后端仍尊重 `enabled=false`（防御性：万一通过 TOML 直改禁用，写回分支会跳过，但账单记录创建不受影响）。
+- **全禁用**：当所有 `target="bill"` 字段都被禁用时，`bill_fields` 为空，pipeline 跳过 `create_record`（避免创建一条只有 `client_token` 的空白记录），并附一条 `all bill fields disabled — record not created` warning。`ai_status` 仍为 `succeeded`（提取本身成功）。
+- **响应过滤**：webhook 响应里的 `ai_extracted`（4 键：amount/category/flow_type/description）也会按 `enabled` 过滤——禁用字段的值不返回，避免 Shortcut 通知显示用户已关闭的值。
+
+- **Disabled ≠ not extracted**: the AI model still extracts all 7 fields per the fixed schema (keeping the schema stable so re-enabling is cheap), but a disabled field's extracted value is dropped at the `encode_fields` stage — it never enters `extract_fields` / `bill_fields`, so it is never written to Feishu. Re-enabling restores the write without re-running AI.
+- **summary row (`target="extract"`)**: the core writeback field (writes back `精简原始数据`); the UI hard-locks it always-on and disables the toggle. The backend still respects `enabled=false` defensively (if disabled via raw TOML, the writeback branch is skipped, but bill-record creation is unaffected).
+- **All disabled**: when every `target="bill"` field is disabled, `bill_fields` is empty, and the pipeline skips `create_record` (avoiding a blank record with only the `client_token` idempotency guard), appending an `all bill fields disabled — record not created` warning. `ai_status` stays `succeeded` (the extraction itself succeeded).
+- **Response filtering**: the webhook response's `ai_extracted` (4 keys: amount/category/flow_type/description) is also filtered by `enabled` — a disabled field's value is not returned, so the Shortcut notification does not show a value the user turned off.
+
+### TOML 形态 / TOML shape
+
+```toml
+[[fields]]
+ai_key = "category"
+feishu_field = "收支分类"
+type = "single_select"
+fallback = "其他"
+target = "bill"
+prompt = "账单分类，如：餐饮/交通/购物/日用/娱乐/医疗/其他"
+enabled = false                  # 禁用此字段：AI 仍提取但不写入飞书（缺省 = true）
+```
+
+`enabled` 键缺省为 `true`，因此存量 TOML 配置（无此键）行为零变化——升级后无需迁移。配置界面保存时会经 `dump_profile` 序列化写出该键（无论 true/false 都显式写出，便于界面回显）。
+
+The `enabled` key defaults to `true`, so existing TOML profiles (without the key) behave identically — no migration needed on upgrade. A config-UI save serializes the key via `dump_profile` (written explicitly whether true or false, for clean UI roundtrip).
 - `GET /admin/feishu/fields` — list field metadata for a table (type + is_primary)
 - `GET /admin/feishu/records` — paginate records, each with a `preview` (is_primary field value, truncated to 80 chars)
 - `POST /admin/feishu/parse-url` — parse a `/base/{app_token}?table={table_id}` direct link; wiki links → 422 `UNSUPPORTED_URL`

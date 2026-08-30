@@ -381,3 +381,29 @@ When the `runtime/` volume is mounted read-only (`docker-compose.yml` defaults t
 - `PUT /admin/config/targets` — full-replace save + hot reload (legacy mode → 409 `LEGACY_MODE`)
 - `GET /admin/config/env` — read AI connection settings (secrets return only `*_set` booleans, never values)
 - `PUT /admin/config/env` — line-based env file edit (preserves comments + non-AI lines; no file → 409 `ENV_FILE_NOT_FOUND`)
+
+## 13. Field enable toggle
+
+Each `[[fields]]` entry supports an optional `enabled` boolean key that controls, per field from the config UI, whether its value is written to Feishu. This is a presentation-layer toggle only — it does not change the AI extraction's fixed schema, only whether the result is persisted.
+
+### Semantics
+
+- **Disabled ≠ not extracted**: the AI model still extracts all 7 fields per the fixed schema (keeping the schema stable so re-enabling is cheap), but a disabled field's extracted value is dropped at the `encode_fields` stage — it never enters `extract_fields` / `bill_fields`, so it is never written to Feishu. Re-enabling restores the write without re-running AI.
+- **summary row (`target="extract"`)**: the core writeback field (writes back `精简原始数据`); the UI hard-locks it always-on and disables the toggle. The backend still respects `enabled=false` defensively (if disabled via raw TOML, the writeback branch is skipped, but bill-record creation is unaffected).
+- **All disabled**: when every `target="bill"` field is disabled, `bill_fields` is empty, and the pipeline skips `create_record` (avoiding a blank record with only the `client_token` idempotency guard), appending an `all bill fields disabled — record not created` warning. `ai_status` stays `succeeded` (the extraction itself succeeded).
+- **Response filtering**: the webhook response's `ai_extracted` (4 keys: amount/category/flow_type/description) is also filtered by `enabled` — a disabled field's value is not returned, so the Shortcut notification does not show a value the user turned off.
+
+### TOML shape
+
+```toml
+[[fields]]
+ai_key = "category"
+feishu_field = "收支分类"
+type = "single_select"
+fallback = "其他"
+target = "bill"
+prompt = "Bill category, e.g. 餐饮/交通/购物/日用/娱乐/医疗/其他"
+enabled = false                  # disable this field: AI still extracts but does not write to Feishu (default = true)
+```
+
+The `enabled` key defaults to `true`, so existing TOML profiles (without the key) behave identically — no migration needed on upgrade. A config-UI save serializes the key via `dump_profile` (written explicitly whether true or false, for clean UI roundtrip).

@@ -73,7 +73,7 @@ feishu-webhook-booking/
 | `AiExtractor` | class | app/ai_extractor.py:134 | pipeline, main.py | prompt-stateless dual-protocol extractor; forced tool_call; per-call httpx client |
 | `ExtractionResult` | dataclass | app/ai_extractor.py:55 | pipeline, field_codec | frozen; 7 fields (summary/description/flow_type/amount/category/payment_method/bill_date) |
 | `AiExtractorError` | exc | app/ai_extractor.py:47 | pipeline, main.py | carries `stage` (request/parse/validate); internalized → `ai_status="failed"` (never 5xx) |
-| `FieldSpec` | dataclass | app/field_codec.py:28 | ai_profile, main.py | frozen; one field mapping (ai_key/feishu_field/type/target/fallback/prompt/source) |
+| `FieldSpec` | dataclass | app/field_codec.py:28 | ai_profile, main.py | frozen; one field mapping (ai_key/feishu_field/type/target/fallback/prompt/source/enabled); `enabled=false` → `encode_fields` skips the spec entirely (config-UI per-field toggle, defaults true) |
 | `encode_fields` | func | app/field_codec.py:50 | pipeline, main.py | ExtractionResult + specs + whitelists → (extract_fields, bill_fields, warnings); whitelist-guarded single_select |
 | `AiProfile` | dataclass | app/ai_profile.py:46 | pipeline, main.py | frozen; prompt_header/summary_field/bill_app_token/bill_table_id/fields tuple |
 | `parse_profile` | func | app/ai_profile.py:58 | AiProfileRegistry | stateless TOML → AiProfile; raises `ProfileConfigError` on schema violation |
