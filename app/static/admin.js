@@ -1548,6 +1548,18 @@
         }
         return;
       }
+      // Pydantic body validation 422: detail is a list of {loc, msg, type}
+      if (status === 422 && Array.isArray(detail)) {
+        var msgs = [];
+        for (var p = 0; p < detail.length; p++) {
+          if (detail[p] && detail[p].msg) {
+            var locStr = (detail[p].loc || []).join('.');
+            msgs.push(locStr + ': ' + detail[p].msg);
+          }
+        }
+        showBanner(billBanner, 'err', msgs.join('; ') || '请求体校验失败 / Body validation failed');
+        return;
+      }
       if (status === 409 && detail && detail.error) {
         var code = detail.error.code;
         if (code === 'STALE_WRITE') {

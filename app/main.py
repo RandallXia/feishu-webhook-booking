@@ -1003,11 +1003,11 @@ class ProfileFieldInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ai_key: str = Field(..., min_length=1, max_length=128)
-    feishu_field: str = Field(..., min_length=1, max_length=128)
+    feishu_field: str | None = Field(default=None, max_length=128)
     type: str = Field(..., min_length=1, max_length=64)
     target: str = Field(..., min_length=1, max_length=64)
     fallback: str | None = Field(default=None, max_length=128)
-    prompt: str = Field(default="", max_length=4096)
+    prompt: str | None = Field(default=None, max_length=4096)
     source: str | None = Field(default=None, max_length=64)
     enabled: bool
 
