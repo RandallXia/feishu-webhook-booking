@@ -200,6 +200,7 @@ def _profile_dict() -> dict:
                 "fallback": s.fallback,
                 "prompt": s.prompt,
                 "source": s.source,
+                "enabled": s.enabled,
             }
             for s in _PROFILE_FIELDS
         ],
@@ -215,7 +216,7 @@ async def test_get_profile_happy():
     WHEN GET /admin/config/profile is called with valid X-Admin-Token
     THEN the response status is 200
       AND body has prompt_header, summary_field, bill.{app_token,table_id}
-      AND body.fields has 8 entries each with all 7 keys (incl None values)
+      AND body.fields has 8 entries each with all 8 keys (incl None values)
       AND body.generation == registry.get_status()["generation"]
       AND body.config_valid is True
     """
@@ -241,16 +242,17 @@ async def test_get_profile_happy():
 
     fields = body["fields"]
     assert len(fields) == 8
-    # Every field carries all 7 keys (None values preserved for the UI).
+    # Every field carries all 8 keys (None values preserved for the UI).
     for f in fields:
         assert set(f.keys()) == {
             "ai_key", "feishu_field", "type", "target",
-            "fallback", "prompt", "source",
+            "fallback", "prompt", "source", "enabled",
         }
     # passthrough fields expose source; non-single_select expose fallback=None
     assert fields[0]["fallback"] is None
     assert fields[0]["source"] == "summary"
     assert fields[2]["fallback"] == "支出"
+    assert fields[0]["enabled"] is True
 
 
 async def test_get_profile_fail_closed_degrades_200():
@@ -618,3 +620,90 @@ async def test_put_profile_reload_disabled_returns_404(profile_file):
 
     assert response.status_code == 404
     assert response.json()["detail"]["error"]["code"] == "RELOAD_DISABLED"
+
+
+# ─── enabled flag in the PUT contract ──────────────────────────────────────
+
+
+async def test_put_profile_enabled_false_round_trips_to_file(monkeypatch, profile_file):
+    """
+    GIVEN a healthy ai_registry + a profile dict where one field has enabled=False
+       AND validate_profile_candidate returns no errors
+    WHEN PUT /admin/config/profile is called
+    THEN the response status is 200 + success=True
+      AND the saved file contains `enabled = false` for that field
+        (verified by re-parsing the file with tomllib)
+    """
+    from app import main as main_mod
+
+    profile_body = _profile_dict()
+    profile_body["fields"][2]["enabled"] = False
+
+    monkeypatch.setattr(
+        main_mod, "validate_profile_candidate",
+        AsyncMock(return_value=(_PROFILE, _WHITELISTS, [])),
+    )
+
+    registry = _mock_registry_healthy(generation=1)
+
+    async with lifespan(app):
+        app.state.settings = _enabled_settings(profile_file=profile_file)
+        app.state.ai_registry = registry
+        app.state.feishu_client = _mock_feishu()
+
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app), base_url=TEST_BASE_URL
+        ) as client:
+            response = await client.put(
+                "/admin/config/profile",
+                json={"profile": profile_body, "base_generation": 1},
+                headers={"X-Admin-Token": ADMIN_TOKEN},
+            )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["success"] is True
+
+    import tomllib
+    saved = tomllib.loads(profile_file.read_text(encoding="utf-8"))
+    flow_field = next(f for f in saved["fields"] if f["ai_key"] == "flow_type")
+    assert flow_field["enabled"] is False
+
+
+async def test_put_profile_field_missing_enabled_returns_422(monkeypatch, profile_file):
+    """
+    GIVEN a profile dict where one fields[] entry OMITS the enabled key
+       (a UI collection omission — pydantic must reject this fail-loud rather
+        than silently default-enabling the field)
+    WHEN PUT /admin/config/profile is called
+    THEN the response status is 422 (pydantic validation error)
+      AND validate_profile_candidate was NOT called
+      AND the profile file is UNCHANGED
+    """
+    from app import main as main_mod
+
+    profile_body = _profile_dict()
+    del profile_body["fields"][2]["enabled"]
+
+    validate_spy = AsyncMock(return_value=(_PROFILE, _WHITELISTS, []))
+    monkeypatch.setattr(main_mod, "validate_profile_candidate", validate_spy)
+
+    original_content = profile_file.read_text(encoding="utf-8")
+    registry = _mock_registry_healthy(generation=1)
+
+    async with lifespan(app):
+        app.state.settings = _enabled_settings(profile_file=profile_file)
+        app.state.ai_registry = registry
+        app.state.feishu_client = _mock_feishu()
+
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app), base_url=TEST_BASE_URL
+        ) as client:
+            response = await client.put(
+                "/admin/config/profile",
+                json={"profile": profile_body, "base_generation": 1},
+                headers={"X-Admin-Token": ADMIN_TOKEN},
+            )
+
+    assert response.status_code == 422
+    validate_spy.assert_not_awaited()
+    assert profile_file.read_text(encoding="utf-8") == original_content

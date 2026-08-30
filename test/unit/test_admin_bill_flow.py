@@ -9,7 +9,7 @@
 #      asserting the JS source carries the exact match keywords the Python
 #      parity asserts on).
 #   2. profile GET→PUT round-trip integration (ASGI): GET returns the editable
-#      shape → the UI assembles a PUT body from it (8 fields, all 7 keys, None
+#      shape → the UI assembles a PUT body from it (8 fields, all 8 keys, None
 #      preserved) → PUT 200 writes the file + reloads.
 #   3. 422 path locator: PUT returns fields[i].<field> errors; the UI must map
 #      them to the matching row + control. Asserted via the JS source carrying
@@ -150,6 +150,7 @@ def _profile_dict() -> dict:
                 "ai_key": s.ai_key, "feishu_field": s.feishu_field,
                 "type": s.type, "target": s.target,
                 "fallback": s.fallback, "prompt": s.prompt, "source": s.source,
+                "enabled": s.enabled,
             }
             for s in _PROFILE_FIELDS
         ],
@@ -356,7 +357,7 @@ async def test_profile_get_then_put_round_trip_writes_file(monkeypatch, profile_
     """
     GIVEN a healthy ai_registry at generation=1 + a tmp profile file
     WHEN the UI flow runs: GET /admin/config/profile, assembles a PUT body
-       from the GET response (8 fields, all 7 keys, base_generation=GET.gen)
+       from the GET response (8 fields, all 8 keys, base_generation=GET.gen)
        AND validate_profile_candidate returns no errors
     THEN the PUT response status is 200 + success=True + generation=2
       AND a .bak file was created with the ORIGINAL content
@@ -391,11 +392,11 @@ async def test_profile_get_then_put_round_trip_writes_file(monkeypatch, profile_
             assert get_body["config_valid"] is True
             fields = get_body["fields"]
             assert len(fields) == 8
-            # Every field carries all 7 keys (None preserved for the UI).
+            # Every field carries all 8 keys (None preserved for the UI).
             for f in fields:
                 assert set(f.keys()) == {
                     "ai_key", "feishu_field", "type", "target",
-                    "fallback", "prompt", "source",
+                    "fallback", "prompt", "source", "enabled",
                 }
 
             # Step 2: UI assembles the PUT body — round-trip the profile verbatim,

@@ -152,6 +152,7 @@ def _profile_dict(summary_field: str = "精简原始数据") -> dict:
                 "ai_key": s.ai_key, "feishu_field": s.feishu_field,
                 "type": s.type, "target": s.target,
                 "fallback": s.fallback, "prompt": s.prompt, "source": s.source,
+                "enabled": s.enabled,
             }
             for s in profile.fields
         ],

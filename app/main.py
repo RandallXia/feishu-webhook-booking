@@ -605,6 +605,7 @@ def _field_spec_to_dict(spec: FieldSpec) -> dict[str, object]:
         "fallback": spec.fallback,
         "prompt": spec.prompt,
         "source": spec.source,
+        "enabled": spec.enabled,
     }
 
 
@@ -991,10 +992,39 @@ async def config_profile_get(
     }
 
 
+class ProfileFieldInput(BaseModel):
+    """One [[fields]] entry in a PUT /admin/config/profile body.
+
+    `enabled` is required-without-default so a UI collection omission fails
+    loud (422) rather than silently defaulting the field to "on" — a stale
+    toggle state in the UI must never reach disk unnoticed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ai_key: str = Field(..., min_length=1, max_length=128)
+    feishu_field: str = Field(..., min_length=1, max_length=128)
+    type: str = Field(..., min_length=1, max_length=64)
+    target: str = Field(..., min_length=1, max_length=64)
+    fallback: str | None = Field(default=None, max_length=128)
+    prompt: str = Field(default="", max_length=4096)
+    source: str | None = Field(default=None, max_length=64)
+    enabled: bool
+
+
+class ProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_header: str = Field(..., min_length=1, max_length=8192)
+    summary_field: str = Field(..., min_length=1, max_length=128)
+    bill: dict[str, str]
+    fields: list[ProfileFieldInput]
+
+
 class ConfigProfilePutBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    profile: dict[str, object]
+    profile: ProfileInput
     base_generation: int = Field(..., ge=0)
 
 
@@ -1097,7 +1127,7 @@ async def config_profile_put(
 
         # Convert the editable shape (top-level summary_field) to the
         # dump_profile input shape (extract.summary_field).
-        profile_in = payload.profile
+        profile_in = payload.profile.model_dump()
         dump_input = {
             "prompt_header": profile_in.get("prompt_header"),
             "extract": {"summary_field": profile_in.get("summary_field")},
