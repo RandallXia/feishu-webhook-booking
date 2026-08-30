@@ -407,6 +407,24 @@ async def test_bill_date_with_hhmm_accepts(monkeypatch):
     assert result.bill_date == "2026-08-28 09:57"
 
 
+async def test_bill_date_with_hhmmss_accepts(monkeypatch):
+    # Given: a mock returning bill_date="2026-08-28 11:48:02" (with HH:mm:ss)
+    settings = _make_ai_settings(provider="anthropic")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        valid = {**_VALID_INPUT, "bill_date": "2026-08-28 11:48:02"}
+        return _anthropic_response(valid)
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: ExtractionResult has bill_date with HH:mm:ss preserved
+    assert result.bill_date == "2026-08-28 11:48:02"
+
+
 async def test_empty_string_field_raises(monkeypatch):
     # Given: a mock returning summary="" (empty string)
     settings = _make_ai_settings(provider="anthropic")

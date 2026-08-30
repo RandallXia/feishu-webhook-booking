@@ -108,12 +108,11 @@ class FeishuClient:
 
         return target.record_id
 
-    async def create_record(self, fields: dict, app_token: str, table_id: str, client_token: str) -> str:
+    async def create_record(self, fields: dict, app_token: str, table_id: str) -> str:
         token = await self._get_tenant_access_token()
-        # client_token is passed as query param to enable idempotent creation
         url = (
             f"{self._settings.feishu_base_url}/open-apis/bitable/v1/apps/"
-            f"{app_token}/tables/{table_id}/records?client_token={client_token}"
+            f"{app_token}/tables/{table_id}/records"
         )
         headers = {
             "Authorization": f"Bearer {token}",
@@ -134,15 +133,6 @@ class FeishuClient:
         msg = data.get("msg", "")
 
         if code != 0:
-            # Duplicate client_token: treat as idempotent success
-            if code in (1214004, 1121004) or "client_token" in msg:
-                logger.warning(
-                    "Duplicate client_token detected for create_record: code=%s, msg=%s",
-                    code,
-                    msg,
-                )
-                return data.get("data", {}).get("record", {}).get("record_id", "")
-
             raise FeishuClientError(
                 f"Failed to create record: code={code}, msg={msg}",
                 stage="create_record",

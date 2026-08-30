@@ -399,6 +399,124 @@
     }
   });
 
+  // ─── OCR flow tester ─────────────────────────────────────────────────────
+  // Hits POST /v1/webhook/ocr (the REAL webhook path) with X-Webhook-Token.
+  // Unlike the dry-run tester above, this writes to Feishu: 原始信息 → AI → 精简数据 → 账单明细.
+  // Token stored in localStorage key 'ocr-flow-token' (separate from admin token).
+  var ocrFlowText = document.getElementById('ocr-flow-text');
+  var ocrFlowToken = document.getElementById('ocr-flow-token');
+  var ocrFlowBtn = document.getElementById('ocr-flow-btn');
+  var ocrFlowResult = document.getElementById('ocr-flow-result');
+  var ocrFlowBanner = document.getElementById('ocr-flow-banner');
+
+  // Restore token from localStorage
+  try {
+    var savedOcrToken = localStorage.getItem('ocr-flow-token');
+    if (savedOcrToken && ocrFlowToken) ocrFlowToken.value = savedOcrToken;
+  } catch (e) { /* localStorage unavailable */ }
+
+  // Save token on change
+  if (ocrFlowToken) {
+    ocrFlowToken.addEventListener('change', function() {
+      try { localStorage.setItem('ocr-flow-token', ocrFlowToken.value); } catch (e) {}
+    });
+  }
+
+  function renderOcrFlowResult(statusCode, body) {
+    if (!ocrFlowResult) return;
+    while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
+
+    var statusEl = el('div', { className: 'status-tag ' + (statusCode === 200 ? 'status-ok' : 'status-err') },
+      'HTTP ' + statusCode);
+    ocrFlowResult.appendChild(statusEl);
+    ocrFlowResult.appendChild(el('div', { className: 'ocr-flow-divider' }));
+
+    // Render response fields in a readable order
+    var fields = [];
+    if (body.success !== undefined) fields.push(['success', String(body.success)]);
+    if (body.request_id) fields.push(['request_id', body.request_id]);
+    if (body.record_id) fields.push(['record_id (原始信息)', body.record_id]);
+    if (body.book_alias) fields.push(['book_alias', body.book_alias]);
+    if (body.ai_status) {
+      var statusLabel = body.ai_status;
+      if (body.ai_status === 'succeeded') statusLabel = '✓ ' + body.ai_status;
+      else if (body.ai_status === 'failed') statusLabel = '✗ ' + body.ai_status;
+      else if (body.ai_status === 'duplicate') statusLabel = '⏭ ' + body.ai_status;
+      fields.push(['ai_status', statusLabel]);
+    }
+    if (body.ai_record_id) fields.push(['ai_record_id (账单明细)', body.ai_record_id]);
+    if (body.ai_extracted && typeof body.ai_extracted === 'object') {
+      for (var k in body.ai_extracted) {
+        if (Object.prototype.hasOwnProperty.call(body.ai_extracted, k)) {
+          fields.push(['  ↳ ' + k, String(body.ai_extracted[k])]);
+        }
+      }
+    }
+    if (body.ai_warnings && body.ai_warnings.length) {
+      for (var w = 0; w < body.ai_warnings.length; w++) {
+        fields.push(['  ⚠ warning', body.ai_warnings[w]]);
+      }
+    }
+
+    for (var i = 0; i < fields.length; i++) {
+      var kv = el('div', { className: 'ocr-flow-field' });
+      kv.appendChild(el('span', { className: 'ocr-flow-key' }, fields[i][0]));
+      kv.appendChild(el('span', { className: 'ocr-flow-val' }, fields[i][1]));
+      ocrFlowResult.appendChild(kv);
+    }
+
+    // Raw JSON toggle
+    var details = el('details', { className: 'ocr-flow-json' });
+    details.appendChild(el('summary', null, '原始 JSON / Raw JSON'));
+    var pre = el('pre');
+    pre.appendChild(document.createTextNode(JSON.stringify(body, null, 2)));
+    details.appendChild(pre);
+    ocrFlowResult.appendChild(details);
+  }
+
+  if (ocrFlowBtn) ocrFlowBtn.addEventListener('click', function() {
+    if (!ocrFlowResult || !ocrFlowText) return;
+    var text = ocrFlowText.value.trim();
+    var token = ocrFlowToken ? ocrFlowToken.value.trim() : '';
+    if (!text) { showBanner(ocrFlowBanner, 'err', '请输入 OCR 文本 / Please enter OCR text'); return; }
+    if (!token) { showBanner(ocrFlowBanner, 'err', '请输入 Webhook Token / Please enter Webhook Token'); return; }
+
+    ocrFlowBtn.disabled = true;
+    // Clear previous result
+    while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
+    ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '发送中... / Sending...'));
+
+    fetch('/v1/webhook/ocr', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Webhook-Token': token,
+      },
+      body: JSON.stringify({ original_text: text, source: 'admin-ocr-flow-test' }),
+    })
+    .then(function(resp) {
+      return resp.json().then(function(body) { return { status: resp.status, body: body }; });
+    })
+    .then(function(result) {
+      renderOcrFlowResult(result.status, result.body);
+      if (result.status === 200 && result.body.ai_status === 'succeeded') {
+        showBanner(ocrFlowBanner, 'ok', '流程成功——请到飞书账本查看新纪录 / Flow succeeded — check Feishu for the new record');
+      } else if (result.status === 200 && result.body.ai_status === 'failed') {
+        showBanner(ocrFlowBanner, 'warn', '原始信息已写入，但 AI 阶段失败 / 原始信息 written but AI stage failed');
+      } else if (result.status !== 200) {
+        showBanner(ocrFlowBanner, 'err', 'HTTP ' + result.status + ' — ' + (result.body && result.body.detail && result.body.detail.error ? result.body.detail.error.message : 'Request failed'));
+      }
+    })
+    .catch(function(err) {
+      while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
+      ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '请求失败: ' + (err.message || err)));
+      showBanner(ocrFlowBanner, 'err', '请求失败 / Request failed');
+    })
+    .then(function() {
+      ocrFlowBtn.disabled = false;
+    });
+  });
+
   // ===========================================================================
   // Extract-table config UI (todo 9 — §extract-section)
   //

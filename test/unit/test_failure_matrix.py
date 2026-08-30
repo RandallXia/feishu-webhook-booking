@@ -10,13 +10,13 @@
 #   6. TTL expiry → full chain reruns (AI called again, create_record count=2)
 #   7. AI disabled → response has exactly 5 master keys (no ai_*)
 #   8. Profile registry fail-closed → 503 AI_PROFILE_UNAVAILABLE, then recovers to 200
-#   9. client_token deterministic across two non-deduped calls (sha256(alias:text)[:40])
+#   9. Full pipeline runs for real (encode_fields → create_record) without client_token
 #
 # Strategy:
 #   - Scenarios 1,2,5,6: mock ai_pipeline.run to return specific PipelineResult values
 #     (assert on response shape + call counts on app.state.feishu_client).
 #   - Scenarios 3,4,9: use a REAL AiPipeline with mocked ai_extractor + feishu_client so
-#     encode_fields runs and bill_fields / client_token flow into create_record call args.
+#     encode_fields runs and bill_fields flow into create_record call args.
 #   - Scenario 7: AI disabled (monkeypatch.delenv AI_ENABLED), no AI mock.
 #   - Scenario 8: mock ai_registry.get_snapshot to raise AiProfileRegistryUnavailableError.
 #
@@ -26,7 +26,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 from dataclasses import replace
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -192,7 +191,7 @@ def _real_pipeline(feishu_mock: AsyncMock, extraction: ExtractionResult) -> AiPi
     """Build a REAL AiPipeline against a mocked extractor + feishu.
 
     The extractor returns the given ExtractionResult; field_codec.encode_fields
-    runs for real so bill_fields / client_token reach feishu_mock.create_record.
+    runs for real so bill_fields reach feishu_mock.create_record.
     """
     settings = _enabled_settings()
     extractor = MagicMock()
@@ -561,19 +560,17 @@ async def test_profile_hot_reload_bad_toml_returns_503():
     assert second.json()["ai_status"] == "succeeded"
 
 
-# ─── Scenario 9: client_token deterministic across two non-deduped calls ────
+# ─── Scenario 9: full pipeline runs for real, create_record without client_token ────
 
 
-async def test_client_token_deterministic():
+async def test_full_pipeline_without_client_token():
     """
-    GIVEN a REAL AiPipeline processing the SAME original_text + alias twice
-       (with app.pipeline.time.time monkeypatched past TTL between calls so dedup
-       does NOT short-circuit the second call)
+    GIVEN a REAL AiPipeline processing the same original_text + alias twice
+       (with time monkeypatched past TTL between calls so dedup does NOT short-circuit)
     WHEN both POSTs are sent
     THEN both responses are 200 + ai_status="succeeded"
       AND feishu.create_record was called twice total
-      AND both create_record calls received the SAME client_token
-      AND that client_token == "ai-bill-" + sha256(f"{alias}:{original_text}")[:40]
+      AND create_record was called with 3 args (no client_token)
     """
     extraction = _make_extraction()
     feishu = _mock_feishu_client(record_id="rec-original-015")
@@ -608,15 +605,6 @@ async def test_client_token_deterministic():
     assert second.json()["ai_status"] == "succeeded"
 
     assert feishu.create_record.await_count == 2
-    token_a = feishu.create_record.call_args_list[0].args[3]
-    token_b = feishu.create_record.call_args_list[1].args[3]
-
-    # alias comes from the conftest-pinned legacy target (default alias "default"
-    # per TargetRegistry legacy mode). Reconstruct the expected token.
-    expected_key = hashlib.sha256(
-        f"default:{VALID_PAYLOAD['original_text']}".encode()
-    ).hexdigest()
-    expected_token = "ai-bill-" + expected_key[:40]
-
-    assert token_a == token_b
-    assert token_a == expected_token
+    # create_record now takes 3 args (no client_token)
+    assert len(feishu.create_record.call_args_list[0].args) == 3
+    assert len(feishu.create_record.call_args_list[1].args) == 3

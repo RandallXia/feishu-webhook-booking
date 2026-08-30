@@ -174,9 +174,10 @@ class AiPipeline:
             )
         except AiExtractorError as exc:
             logger.warning(
-                "pipeline ai extract failed alias=%s stage=%s",
+                "pipeline ai extract failed alias=%s stage=%s error=%s",
                 target.alias,
                 exc.stage,
+                exc,
             )
             return PipelineResult(
                 ai_status="failed",
@@ -228,7 +229,7 @@ class AiPipeline:
 
         # Skip bill record creation entirely when every bill spec is disabled
         # (or absent) — an empty bill_fields dict would otherwise create a
-        # blank Feishu record with only the client_token idempotency guard.
+        # blank Feishu record.
         if not bill_fields:
             warnings.append("all bill fields disabled — record not created")
             logger.info(
@@ -243,19 +244,18 @@ class AiPipeline:
                 dedup_hit=False,
             )
 
-        client_token = "ai-bill-" + dedup_key[:40]
         try:
             bill_record_id = await self._feishu.create_record(
                 bill_fields,
                 profile.bill_app_token,
                 profile.bill_table_id,
-                client_token,
             )
         except FeishuClientError as exc:
             logger.warning(
-                "pipeline bill create failed alias=%s stage=%s",
+                "pipeline bill create failed alias=%s stage=%s error=%s",
                 target.alias,
                 exc.stage,
+                exc,
             )
             return PipelineResult(
                 ai_status="failed",
