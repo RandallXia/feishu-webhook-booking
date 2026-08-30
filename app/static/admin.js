@@ -1212,6 +1212,17 @@
       var f = fields[i];
       ffSel.appendChild(el('option', { value: f.name }, f.name));
     }
+    // 如果值非空但不在 options 里（提取表字段或旧表字段），注入额外 option 防止浏览器重置为空
+    if (spec.feishu_field) {
+      var hasOpt = false;
+      for (var c = 0; c < ffSel.options.length; c++) {
+        if (ffSel.options[c].value === spec.feishu_field) { hasOpt = true; break; }
+      }
+      if (!hasOpt) {
+        var extra = el('option', { value: spec.feishu_field }, spec.feishu_field + '（提取表）');
+        ffSel.insertBefore(extra, ffSel.options[1] || null);
+      }
+    }
     ffSel.value = spec.feishu_field || '';
     ffCell.appendChild(ffSel);
     var chip = el('span', { className: 'match-chip' });
