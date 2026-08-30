@@ -70,6 +70,7 @@ POST /v1/webhook/ocr  (original_text)
 | `AI_PROFILE_FILE` | `AI_ENABLED=true` | — | 指向 `ai-profile.toml` 路径；`:ro` 挂载即可，mtime 热重载 |
 | `AI_PROFILE_RELOAD_INTERVAL_SECONDS` | 可选 | `10` | profile 热重载最小间隔（mtime 检查节流） |
 | `AI_DEDUP_TTL_SECONDS` | 可选 | `300` | 同一 `(alias, original_text)` 的去重窗口；命中即 `ai_status="duplicate"`，不调 AI、不建记录 |
+| `AI_FORCE_TOOL_CALL` | 可选 | `true` | 是否强制发送 `tool_choice` 参数。某些 relay（如阿里云通义 thinking 模式）不支持 `tool_choice` 会返回 400，将该值设为 `false` 即可关闭 |
 
 ### `AI_BASE_URL` 拼接规则 / Concatenation rule
 

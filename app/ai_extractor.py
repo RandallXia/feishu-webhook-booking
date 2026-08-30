@@ -186,10 +186,9 @@ class AiExtractor:
                     },
                 }
             ],
-            # tool_choice omitted: some relay backends (e.g. Aliyun Qwen in
-            # thinking mode) reject forced tool_choice. The tool schema in
-            # the system prompt is sufficient for the model to call it.
         }
+        if settings.ai_force_tool_call:
+            body["tool_choice"] = {"type": "tool", "name": "submit_bill"}
 
         start = time.time()
         try:
@@ -275,11 +274,12 @@ class AiExtractor:
                     },
                 }
             ],
-            "tool_choice": {
+        }
+        if settings.ai_force_tool_call:
+            body["tool_choice"] = {
                 "type": "function",
                 "function": {"name": "submit_bill"},
-            },
-        }
+            }
 
         start = time.time()
         try:
