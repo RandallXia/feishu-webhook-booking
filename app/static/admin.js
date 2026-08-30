@@ -635,6 +635,15 @@
     tblSel.addEventListener('change', function() {
       var tblInput = card.querySelector('.table-id-input');
       if (tblInput) tblInput.value = tblSel.value;
+      // Default-alias extract table changed → repopulate the summary-field
+      // dropdown from the new (app_token, table_id) so the user sees the
+      // freshly-selected table's fields without a save round-trip.
+      if (card.getAttribute('data-alias') === extractDefaultAlias) {
+        var appTok = card.querySelector('.app-token-input').value.trim();
+        var tblId = tblSel.value;
+        extractDefaultTarget = { app_token: appTok, table_id: tblId };
+        loadExtractFields(appTok, tblId);
+      }
     });
 
     var tblIdGroup = el('div', { className: 'form-group' });
@@ -992,6 +1001,7 @@
   var billDeriveBtn = document.getElementById('bill-derive-btn');
   var billBaseGeneration = 0;
   var billCachedFields = [];
+  var billCachedTables = [];
 
   function billParseUrl() {
     var url = billUrlInput.value.trim();
@@ -1040,9 +1050,9 @@
     api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
       billTableSelect.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
-      var tables = data.tables || [];
-      for (var i = 0; i < tables.length; i++) {
-        var t = tables[i];
+      billCachedTables = data.tables || [];
+      for (var i = 0; i < billCachedTables.length; i++) {
+        var t = billCachedTables[i];
         billTableSelect.appendChild(el('option', { value: t.table_id }, t.name || t.table_id));
       }
       var currentTbl = billTableIdInput.value.trim();
@@ -1055,11 +1065,30 @@
         }
       }
       billTableSelect.disabled = false;
+      billUpdateTableName();
     }).catch(function(err) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
       billTableSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
       showError(billSection.querySelector('.table-status'), err.message || '加载表列表失败');
     });
+  }
+
+  // Paint #bill-table-name from the cached tables list so the user can see
+  // which bill table they are configuring. No-op if the span is absent or no
+  // table is selected. Pure paint — callers own markDirty().
+  function billUpdateTableName() {
+    var nameEl = document.getElementById('bill-table-name');
+    if (!nameEl) return;
+    while (nameEl.firstChild) nameEl.removeChild(nameEl.firstChild);
+    var tblId = billTableIdInput ? billTableIdInput.value.trim() : '';
+    if (!tblId || !billCachedTables.length) return;
+    for (var i = 0; i < billCachedTables.length; i++) {
+      var t = billCachedTables[i] || {};
+      if (t.table_id === tblId) {
+        nameEl.appendChild(document.createTextNode(t.name || t.table_id));
+        return;
+      }
+    }
   }
 
   // GET /admin/feishu/fields → cache + return [{name, type, options, is_primary}].
@@ -1088,6 +1117,7 @@
     var appToken = billAppTokenInput.value.trim();
     var tableId = billTableSelect.value;
     billRenderTokens();
+    billUpdateTableName();
     markDirty();
     if (appToken && tableId) {
       billLoadFields(appToken, tableId).then(function(fields) {
@@ -1644,6 +1674,18 @@
 
   if (saveProfileBtn) saveProfileBtn.addEventListener('click', function() {
     if (!billBanner) return;
+    // Cross-table gate: the extract-table summary field is required before
+    // the bill profile can be saved (the pipeline writes 精简原始数据 there).
+    // Abort the PUT with a banner + error row so the user fixes the extract
+    // section first.
+    var summaryField = billGetSummaryField();
+    if (!summaryField) {
+      billClearErrors();
+      showBanner(billBanner, 'err',
+        '请先在提取表配置区选择摘要字段 / Select a summary field in the extract-section first');
+      billShowErrorRow('摘要字段为空 — 前往提取表配置区选择 / Summary field empty — set it in the extract section');
+      return;
+    }
     saveProfileBtn.disabled = true;
     var body = billGatherBody();
     billClearErrors();

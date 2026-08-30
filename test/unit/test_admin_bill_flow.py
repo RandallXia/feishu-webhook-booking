@@ -803,3 +803,42 @@ async def test_admin_html_bill_section_has_required_ids():
     assert 'id="prompt-header"' in body
     assert 'id="bill-section"' in body
     assert 'id="bill-banner"' in body
+
+
+def test_admin_html_bill_section_has_table_name_span():
+    """
+    GIVEN app/static/admin.html (table-aware field mapping)
+    WHEN the source is scanned
+    THEN the bill-table-header contains id="bill-table-name" (the span that
+       shows the currently-selected bill table's name, fetched from the
+       tables list cache so the user knows which table they are configuring)
+    """
+    html = _read_static("admin.html")
+    assert 'id="bill-table-name"' in html, (
+        "admin.html missing bill-table-name span in bill-table-header"
+    )
+
+
+def test_admin_js_refreshes_extract_fields_on_extract_table_change():
+    """
+    GIVEN app/static/admin.js (table-aware field mapping)
+    WHEN the alias-card table-select change handler is scanned
+    THEN it calls loadExtractFields when the changed card is the default
+       alias (so switching the extract table repopulates the summary-field
+       dropdown from the new table's fields without a save round-trip)
+    """
+    js = _read_static("admin.js")
+    # The alias-card tblSel change handler must reference both
+    # extractDefaultAlias (the guard) and loadExtractFields (the refresh).
+    assert "extractDefaultAlias" in js, "admin.js missing extractDefaultAlias guard"
+    assert "loadExtractFields" in js, "admin.js missing loadExtractFields call"
+    # The change handler must tie them together: a line that calls
+    # loadExtractFields from inside the table-select change handler.
+    m = re.search(r"tblSel\.addEventListener\(\s*['\"]change['\"]\s*,.*?\n\s*\}\s*\);",
+                  js, re.S)
+    assert m, "admin.js missing tblSel change handler"
+    handler = m.group(0)
+    assert "loadExtractFields" in handler, (
+        "tblSel change handler does not call loadExtractFields on extract table switch"
+    )
+
