@@ -115,7 +115,7 @@ async def test_create_record_happy_path(monkeypatch):
         url = str(request.url)
         assert "test-app-token" in url
         assert "test-table-id" in url
-        assert "client_token=my-idem-key" in url
+        assert "client_token" not in url
         body = json.loads(request.content)
         assert body["fields"] == {"title": "hello"}
         return httpx.Response(
@@ -126,35 +126,12 @@ async def test_create_record_happy_path(monkeypatch):
     _patch_transport(monkeypatch, handler)
     client = FeishuClient(get_settings())
     result = await client.create_record(
-        {"title": "hello"}, "test-app-token", "test-table-id", "my-idem-key"
+        {"title": "hello"}, "test-app-token", "test-table-id"
     )
     assert result == "new-rec-001"
 
 
-async def test_create_record_duplicate_client_token_error_code(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        if _is_token_request(request):
-            return _token_response()
-        assert request.method == "POST"
-        return httpx.Response(
-            200,
-            json={
-                "code": 1214004,
-                "msg": "client_token duplicated",
-                "data": {"record": {"record_id": "existing-rec"}},
-            },
-        )
-
-    _patch_transport(monkeypatch, handler)
-    client = FeishuClient(get_settings())
-    result = await client.create_record(
-        {"title": "hello"}, "test-app-token", "test-table-id", "my-idem-key"
-    )
-    # Duplicate is treated as idempotent success — returns existing record_id
-    assert result == "existing-rec"
-
-
-async def test_create_record_duplicate_client_token_code_zero(monkeypatch):
+async def test_create_record_success_code_zero(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if _is_token_request(request):
             return _token_response()
@@ -167,7 +144,7 @@ async def test_create_record_duplicate_client_token_code_zero(monkeypatch):
     _patch_transport(monkeypatch, handler)
     client = FeishuClient(get_settings())
     result = await client.create_record(
-        {"title": "hello"}, "test-app-token", "test-table-id", "my-idem-key"
+        {"title": "hello"}, "test-app-token", "test-table-id"
     )
     assert result == "existing-rec"
 
@@ -182,7 +159,7 @@ async def test_create_record_other_code_raises_error(monkeypatch):
     client = FeishuClient(get_settings())
     with pytest.raises(FeishuClientError) as exc:
         await client.create_record(
-            {"title": "hello"}, "test-app-token", "test-table-id", "my-idem-key"
+            {"title": "hello"}, "test-app-token", "test-table-id"
         )
     assert exc.value.stage == "create_record"
 
@@ -197,7 +174,7 @@ async def test_create_record_http_500_raises_error(monkeypatch):
     client = FeishuClient(get_settings())
     with pytest.raises(FeishuClientError) as exc:
         await client.create_record(
-            {"title": "hello"}, "test-app-token", "test-table-id", "my-idem-key"
+            {"title": "hello"}, "test-app-token", "test-table-id"
         )
     assert exc.value.stage == "create_record"
 

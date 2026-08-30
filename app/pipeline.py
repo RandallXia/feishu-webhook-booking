@@ -229,7 +229,7 @@ class AiPipeline:
 
         # Skip bill record creation entirely when every bill spec is disabled
         # (or absent) — an empty bill_fields dict would otherwise create a
-        # blank Feishu record with only the client_token idempotency guard.
+        # blank Feishu record.
         if not bill_fields:
             warnings.append("all bill fields disabled — record not created")
             logger.info(
@@ -244,14 +244,11 @@ class AiPipeline:
                 dedup_hit=False,
             )
 
-        hash_hex = dedup_key[:32]
-        client_token = f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
         try:
             bill_record_id = await self._feishu.create_record(
                 bill_fields,
                 profile.bill_app_token,
                 profile.bill_table_id,
-                client_token,
             )
         except FeishuClientError as exc:
             logger.warning(
