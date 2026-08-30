@@ -1335,7 +1335,7 @@
   //   null                               for unrecognized shapes
   function billParseErrorPath(path) {
     if (typeof path !== 'string') return null;
-    if (path === 'bill' || path === 'extract') return { banner: true };
+    if (path === 'profile' || path === 'bill' || path === 'extract') return { banner: true };
     if (path === 'extract.summary_field') return { summaryField: true };
     var m = path.match(/^fields\[(\d+)\](?:\.(\w+))?$/);
     if (!m) return null;

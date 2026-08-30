@@ -1144,6 +1144,11 @@ async def config_profile_put(
             target.table_id,
         )
         if errors:
+            logger.warning(
+                "config profile PUT validation failed request_id=%s errors=%s",
+                request_id,
+                errors,
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
