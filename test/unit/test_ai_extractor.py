@@ -531,3 +531,95 @@ async def test_openai_response_without_tool_calls_raises(monkeypatch):
 
     # Then: AiExtractorError is raised with stage="parse"
     assert exc.value.stage == "parse"
+
+
+# ─── Anthropic text fallback tests ──────────────────────────────────────────
+
+
+def _anthropic_text_response(text):
+    """Build a mock response with text content only (no tool_use block)."""
+    return httpx.Response(
+        200,
+        json={"content": [{"type": "text", "text": text}]},
+    )
+
+
+async def test_anthropic_text_fallback_raw_json(monkeypatch):
+    # Given: a mock returning plain text with raw JSON (no tool_use block)
+    settings = _make_ai_settings(provider="anthropic")
+    raw_json = json.dumps(_VALID_INPUT, ensure_ascii=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _anthropic_text_response(raw_json)
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("some ocr text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: the fallback parser extracts the JSON and returns ExtractionResult
+    assert isinstance(result, ExtractionResult)
+    assert result.summary == "麦当劳 ¥42"
+    assert result.amount == 42.0
+    assert result.bill_date == "2026-08-28"
+
+
+async def test_anthropic_text_fallback_fenced_json(monkeypatch):
+    # Given: a mock returning text with ```json fenced JSON block
+    settings = _make_ai_settings(provider="anthropic")
+    raw_json = json.dumps(_VALID_INPUT, ensure_ascii=False)
+    fenced = f"```json\n{raw_json}\n```"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _anthropic_text_response(fenced)
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("some ocr text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: the fallback parser extracts JSON from the fenced block
+    assert isinstance(result, ExtractionResult)
+    assert result.summary == "麦当劳 ¥42"
+    assert result.amount == 42.0
+
+
+async def test_anthropic_text_fallback_embedded_json(monkeypatch):
+    # Given: a mock returning prose text with JSON embedded in the middle
+    settings = _make_ai_settings(provider="anthropic")
+    raw_json = json.dumps(_VALID_INPUT, ensure_ascii=False)
+    embedded = f"Here is the extracted bill info: {raw_json}\nPlease review it."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _anthropic_text_response(embedded)
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called
+    result = await extractor.extract("some ocr text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: the fallback parser extracts the JSON from surrounding prose
+    assert isinstance(result, ExtractionResult)
+    assert result.summary == "麦当劳 ¥42"
+    assert result.amount == 42.0
+
+
+async def test_anthropic_text_fallback_invalid(monkeypatch):
+    # Given: a mock returning plain text with no JSON content
+    settings = _make_ai_settings(provider="anthropic")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _anthropic_text_response("I cannot help with that.")
+
+    _patch_httpx(monkeypatch, handler)
+    extractor = AiExtractor(settings)
+
+    # When: extract() is called with invalid text
+    with pytest.raises(AiExtractorError) as exc:
+        await extractor.extract("text", _PROMPT_HEADER, _FIELD_PROMPTS)
+
+    # Then: AiExtractorError is raised with stage="parse"
+    assert exc.value.stage == "parse"
