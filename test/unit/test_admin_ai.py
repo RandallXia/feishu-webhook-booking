@@ -343,7 +343,7 @@ async def test_post_test_happy_dry_run():
     assert extracted["category"] == "餐饮"
 
     assert body["bill_fields"]
-    assert body["bill_fields"]["金额"] == "42.0"
+    assert body["bill_fields"]["金额"] == 42.0
     assert body["bill_fields"]["分类"] == "餐饮"
 
     assert body["summary_writeback"]["field"] == "精简原始数据"

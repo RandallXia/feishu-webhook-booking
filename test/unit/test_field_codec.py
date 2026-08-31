@@ -94,7 +94,7 @@ def test_number_passthrough():
         FieldSpec(ai_key="amount", feishu_field="金额", type="number", target="bill"),
     ]
     extract_fields, bill_fields, warnings = encode_fields(extraction, specs, {})
-    assert bill_fields["金额"] == "99.5"
+    assert bill_fields["金额"] == 99.5
     assert extract_fields == {}
     assert warnings == []
 
@@ -318,7 +318,7 @@ def test_extract_bill_routing():
     assert extract_fields["分类"] == "餐饮"
 
     # bill dict
-    assert bill_fields["金额"] == "42.0"
+    assert bill_fields["金额"] == 42.0
     # date filed should be a timestamp (int)
     assert isinstance(bill_fields["日期"], int)
     expected_date = _shanghai_midnight_ms(2026, 8, 28)

@@ -89,7 +89,7 @@ def encode_fields(
             value = raw
 
         elif spec.type == "number":
-            value = str(float(getattr(extraction, spec.ai_key)))
+            value = float(getattr(extraction, spec.ai_key))
 
         elif spec.type == "single_select":
             raw = str(getattr(extraction, spec.ai_key))
