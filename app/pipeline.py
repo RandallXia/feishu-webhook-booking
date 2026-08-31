@@ -244,6 +244,12 @@ class AiPipeline:
                 dedup_hit=False,
             )
 
+        logger.info(
+            "pipeline bill fields payload alias=%s fields=%s",
+            target.alias,
+            bill_fields,
+        )
+
         try:
             bill_record_id = await self._feishu.create_record(
                 bill_fields,
