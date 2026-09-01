@@ -95,12 +95,12 @@ table td { font-size: 0.8rem; word-break: break-all; }
 .bill-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .bill-table thead th { background: #f5f5f7; font-weight: 600; color: #515154; font-size: 0.75rem; text-align: left; padding: 8px; border-bottom: 1px solid #e8e8ed; position: sticky; top: 0; z-index: 1; }
 .bill-table tbody td { padding: 6px 8px; border-bottom: 1px solid #f0f0f3; font-size: 0.8rem; vertical-align: middle; }
-.bill-table .col-enable { width: 56px; }
-.bill-table .col-aikey { width: 150px; }
-.bill-table .col-type { width: 120px; }
-.bill-table .col-fallback { width: 140px; }
-.bill-table .col-feishu { width: auto; }
+.bill-table .col-feishu-name { width: 160px; }
+.bill-table .col-ai-key { width: 140px; }
+.bill-table .col-type { width: 110px; }
+.bill-table .col-fallback { width: 120px; }
 .bill-table .col-prompt { width: auto; }
+.bill-table .col-enable { width: 56px; }
 
 /* 表格首尾列内边距 */
 .bill-table td:first-child, .bill-table thead th:first-child { padding-left: 12px; }
@@ -117,13 +117,13 @@ table td { font-size: 0.8rem; word-break: break-all; }
 .field-type-tag { display: inline-block; background: #f5f5a7; color: #515154; border-radius: 3px; padding: 1px 5px; font-size: 0.65rem; margin-top: 2px; text-transform: lowercase; }
 
 /* AI 键映射列：ai-key-select 下拉 */
-.col-aikey select.ai-key-select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.col-aikey select.ai-key-select:disabled { background: #f5f5f7; color: #86868b; }
+.col-ai-key select.ai-key-select { width: 100%; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px; font-size: 0.78rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.col-ai-key select.ai-key-select:disabled { background: #f5f5f7; color: #86868b; }
 
 /* 飞书字段列：只读 name + type tag + match-chip (no select inside anymore) */
-.col-feishu .field-name-label { display: block; }
-.col-feishu .field-type-tag { display: inline-block; }
-.col-feishu .match-chip { display: block; margin-top: 4px; white-space: nowrap; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px; }
+.col-feishu-name .field-name-label { display: block; }
+.col-feishu-name .field-type-tag { display: inline-block; }
+.col-feishu-name .match-chip { display: block; margin-top: 4px; white-space: nowrap; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px; }
 .match-chip.match-auto { background: #e8f5e9; color: #2e7d32; }
 .match-chip.match-manual { background: #e3f2fd; color: #1565c0; }
 .match-chip.match-none { background: #f5f5f7; color: #86868b; }

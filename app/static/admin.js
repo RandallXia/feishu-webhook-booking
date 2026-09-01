@@ -1493,7 +1493,7 @@
     if (!enabled) row.classList.add('bill-row-disabled');
 
     // ── 飞书字段列：只读标签名 + 类型 tag.
-    var ffCell = el('td', { className: 'col-feishu' });
+    var ffCell = el('td', { className: 'col-feishu-name' });
     ffCell.appendChild(el('div', { className: 'field-name-label' }, fieldName));
     if (fieldType) ffCell.appendChild(el('div', { className: 'field-type-tag' }, fieldType));
     // match-chip on the same row: auto / manual / none.
@@ -1502,7 +1502,7 @@
     row.appendChild(ffCell);
 
     // ── AI 键映射列：下拉选择目标 ai_key 或 跳过.
-    var aikeyCell = el('td', { className: 'col-aikey' });
+    var aikeyCell = el('td', { className: 'col-ai-key' });
     var keySel = el('select', { className: 'ai-key-select' });
     keySel.appendChild(el('option', { value: '' }, '跳过 / Skip'));
     // Bill-target keys only — summary lives in the extract-section dropdown.
