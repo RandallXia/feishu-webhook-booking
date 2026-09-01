@@ -649,39 +649,71 @@ def test_admin_js_exposes_load_extract_fields_function():
     assert re.search(pattern, js), "admin.js missing function declaration: loadExtractFields"
 
 
-def test_admin_js_render_bill_rows_skips_summary():
+def test_admin_js_render_bill_rows_drives_by_feishu_field():
     """
-    GIVEN app/static/admin.js (split field mapping: bill table shows 7 rows)
-    WHEN the renderBillRows function body is scanned
-    THEN it skips the summary key in the AI_KEYS render loop (summary is
-       rendered in the extract-section dropdown, not the bill mapping table),
-       so the bill table shows only the 7 bill-target fields
+    GIVEN app/static/admin.js (reverse-orientation bill mapping: each Feishu
+       field is a row, with an AI-key dropdown choosing which extraction key
+       that field maps to — or 'skip' for unmapped fields)
+    WHEN the renderBillRows + renderBillRow functions are scanned
+    THEN renderBillRows iterates the passed `fields` array (NOT the fixed
+       AI_KEYS array) so each Feishu field becomes a row
+       AND renderBillRow stamps the row with `data-feishu-field` (the anchor
+       billGatherBody reads back when assembling the PUT body)
+       AND the AI-key dropdown uses class `ai-key-select` (not the old
+       `feishu-field-select` — the orientation is reversed)
     """
     js = _read_static("admin.js")
+    # renderBillRows iterates `fields`, not AI_KEYS, for row generation.
     m = re.search(r"function\s+renderBillRows\s*\([^)]*\)\s*\{", js)
     assert m, "renderBillRows function not found"
-    # Slice from renderBillRows start to the next sibling function definition.
     start = m.end()
     rest = js[start:]
     end_m = re.search(r"\n\s{2}function\s+\w+\s*\(", rest)
     body = rest[: end_m.start()] if end_m else rest
-    assert "summary" in body, "renderBillRows body does not reference summary"
-    skip_re = re.compile(r"if\s*\(\s*key\s*===\s*['\"]summary['\"]\s*\)\s*continue\s*;?")
-    assert skip_re.search(body), (
-        "renderBillRows missing `if (key === 'summary') continue;` skip clause"
-    )
+    # The render loop must iterate the `fields` argument (reverse orientation).
+    assert re.search(r"for\s*\(\s*var\s+\w+\s*=\s*0\s*;\s*\w+\s*<\s*\(fields\s*\|\|\s*\[\]\)\.length", body), \
+        "renderBillRows does not iterate the `fields` array"
+    # renderBillRow stamps data-feishu-field on each row.
+    assert "'data-feishu-field'" in js or '"data-feishu-field"' in js, \
+        "renderBillRow missing data-feishu-field attribute"
+    # The AI-key dropdown uses the new ai-key-select class.
+    assert "ai-key-select" in js, "renderBillRow missing ai-key-select dropdown class"
+    # The old feishu-field-select class is gone (orientation reversed).
+    assert "feishu-field-select" not in js, \
+        "admin.js still references the old feishu-field-select class"
 
 
-def test_admin_js_bill_matched_count_denominator_is_seven():
+def test_admin_js_bill_matched_count_denominator_is_dynamic():
     """
-    GIVEN app/static/admin.js (bill mapping table now shows 7 rows, not 8)
+    GIVEN app/static/admin.js (bill mapping table is now Feishu-field-driven,
+       so the row count varies with the selected table)
     WHEN the billUpdateMatchedCount function body is scanned
-    THEN the matched-count denominator is 7 (summary is counted in the
-       extract-section dropdown, not the bill mapping table)
+    THEN the matched-count denominator is rows.length (NOT a fixed 7 or 8),
+       so the count reflects the actual number of Feishu fields rendered
+       AND neither /7 nor /8 denominators remain (those encoded the old
+       fixed-row-count orientation)
     """
     js = _read_static("admin.js")
-    assert "/7" in js, "admin.js missing /7 matched-count denominator"
+    assert "rows.length" in js, "admin.js missing rows.length denominator"
+    assert "/7" not in js, "admin.js still references the old /7 denominator"
     assert "/8" not in js, "admin.js still references the old /8 denominator"
+
+
+def test_admin_js_exposes_auto_derive_key_and_infer_type():
+    """
+    GIVEN app/static/admin.js (reverse-orientation bill mapping introduces
+       two new pure helpers)
+    WHEN the source is scanned
+    THEN it contains function declarations for:
+      - autoDeriveKey (single-field ai_key derivation — a one-shot wrapper
+        over autoDerive for callers that need a best guess per field)
+      - inferType (Feishu type → FieldSpec type inference, used as the
+        initial value of the type-select when a row is first rendered)
+    """
+    js = _read_static("admin.js")
+    for name in ("autoDeriveKey", "inferType"):
+        pattern = r"function\s+" + re.escape(name) + r"\s*\("
+        assert re.search(pattern, js), f"admin.js missing function declaration: {name}"
 
 
 def test_admin_js_auto_derive_uses_heuristic_keywords():

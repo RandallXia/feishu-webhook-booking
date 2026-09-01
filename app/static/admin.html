@@ -134,16 +134,16 @@
     <!-- 匹配计数 + 重新推导链接 + 当前表名 -->
     <div class="bill-table-header">
       <span id="bill-table-name" class="bill-table-name"></span>
-      <span id="bill-matched-count">已匹配 0/7 · Matched</span>
+      <span id="bill-matched-count">已匹配 0 字段 · Matched</span>
       <a href="#" class="bill-derive-link" id="bill-derive-btn">重新推导 / Re-derive</a>
     </div>
-    <!-- 8 行映射表格 -->
+    <!-- 映射表格：以飞书真实字段为行，每行一个 AI 键下拉 -->
     <div class="bill-table-wrap">
       <table class="bill-table">
         <thead><tr>
-          <th class="col-enable">启用</th><th class="col-aikey">AI 字段</th>
-          <th class="col-feishu">飞书字段</th><th class="col-type">类型</th>
-          <th class="col-fallback">回退</th><th class="col-prompt">提示词</th>
+          <th class="col-feishu">飞书字段</th><th class="col-aikey">AI 键映射</th>
+          <th class="col-type">类型</th><th class="col-fallback">回退</th>
+          <th class="col-prompt">提示词</th><th class="col-enable">启用</th>
         </tr></thead>
         <tbody id="bill-fields-list"></tbody>
       </table>
