@@ -12,6 +12,22 @@
   <h1>AI 配置管理</h1>
   <p class="subtitle">AI Config Admin — 配置浏览与编辑 / Config viewer & editor</p>
 
+  <!-- First-run setup card (shown only when no admin token is stored) -->
+  <div class="card" id="setup-card" style="display:none;">
+    <div class="card-title">初始化设置 / Initial Setup</div>
+    <p style="margin-bottom:12px;color:#515154;font-size:0.9rem;">
+      首次使用请先在运行环境的 env 文件中设置 <code>CONFIG_RELOAD_TOKEN</code>，
+      然后在下方输入该令牌。<br>
+      Set <code>CONFIG_RELOAD_TOKEN</code> in your env file first, then enter it below.
+    </p>
+    <div class="form-group">
+      <label for="setup-token-input">管理令牌 / Admin Token (CONFIG_RELOAD_TOKEN)</label>
+      <input type="text" id="setup-token-input" placeholder="CONFIG_RELOAD_TOKEN 的值" />
+      <div class="hint" id="setup-token-hint" style="display:none;"></div>
+    </div>
+    <button class="btn btn-primary" id="setup-token-btn">开始使用 / Get Started</button>
+  </div>
+
   <!-- Token card (sticky) -->
   <div class="card" id="token-card">
     <div class="card-title">管理令牌 / Admin Token</div>

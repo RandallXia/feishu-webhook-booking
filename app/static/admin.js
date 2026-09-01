@@ -48,8 +48,25 @@
       body: options.body,
     }).then(function(response) {
       if (response.status === 401) {
-        alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
-        if (tokenInput) tokenInput.focus();
+        // Stored token is invalid → clear it and show the setup card so the
+        // user can re-enter. Bypass alert (the setup card IS the recovery
+        // surface) and surface the "wrong token" hint on the card itself.
+        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+        var setupCard = document.getElementById('setup-card');
+        var setupHint = document.getElementById('setup-token-hint');
+        if (setupCard) {
+          setupCard.style.display = '';
+          var sections = document.querySelectorAll('.card:not(#setup-card)');
+          for (var s = 0; s < sections.length; s++) sections[s].style.display = 'none';
+          if (setupHint) {
+            while (setupHint.firstChild) setupHint.removeChild(setupHint.firstChild);
+            setupHint.appendChild(document.createTextNode('令牌不正确，请重新输入 / Invalid token, please re-enter'));
+            setupHint.style.display = 'block';
+          }
+        } else {
+          alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
+          if (tokenInput) tokenInput.focus();
+        }
         return response.text().then(function() {
           var err = new Error('Unauthorized');
           err.status = 401;
@@ -2162,6 +2179,31 @@
   }
 
   // --- Init ---
+
+  // First-run gate: no token in localStorage → show setup card, hide admin
+  // sections, and short-circuit init. The setup card's button stores the
+  // token and reloads so the rest of init runs against a real token.
+  var savedToken = null;
+  try { savedToken = localStorage.getItem(TOKEN_KEY); } catch (e) {}
+  if (!savedToken) {
+    var setupCard = document.getElementById('setup-card');
+    if (setupCard) setupCard.style.display = '';
+    var sections = document.querySelectorAll('.card:not(#setup-card)');
+    for (var s = 0; s < sections.length; s++) sections[s].style.display = 'none';
+    var setupBtn = document.getElementById('setup-token-btn');
+    var setupInput = document.getElementById('setup-token-input');
+    if (setupBtn && setupInput) {
+      setupBtn.addEventListener('click', function() {
+        var v = setupInput.value.trim();
+        if (v) {
+          try { localStorage.setItem(TOKEN_KEY, v); } catch (e) {}
+          location.reload();
+        }
+      });
+    }
+    return;
+  }
+
   loadToken();
   refreshStatus();
   loadExtractTargets();
