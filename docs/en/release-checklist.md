@@ -29,6 +29,11 @@ Before opening the repository to the public, make sure the current dynamic-routi
 3. Confirm `runtime/feishu-targets.toml.example` contains placeholders only
 4. Confirm no real runtime files were accidentally committed
 
+## Version release checks (tag release)
+
+- [ ] Confirm the Dockerfile keeps `apk upgrade` (security patches)
+- [ ] Confirm the CI trigger rules: master pushes only build-verify, tag pushes publish to Docker Hub
+
 ## Pass criteria
 
 When all items above pass, the repository is ready to publish as an open-source project.

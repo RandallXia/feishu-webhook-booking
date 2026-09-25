@@ -18,6 +18,8 @@ This service is a narrow FastAPI webhook bridge between iPhone Shortcuts OCR and
 7. Service updates the selected fixed record field `原始信息`
 8. Existing Feishu automation continues to generate follow-up fields
 
+Step 8 only holds when `AI_ENABLED=false` (default); when `AI_ENABLED=true`, this service's AI extraction pipeline takes over the follow-up field generation, see "AI Extraction Pipeline (optional)" below.
+
 ## Responsibilities
 
 The service intentionally does only three things:
@@ -26,7 +28,12 @@ The service intentionally does only three things:
 - resolve one server-side configured Feishu target
 - write `原始信息` to that target record
 
-The service does **not** parse accounting fields, create new records per request, or let clients provide Feishu secrets.
+The service does **not** create new records per request or let clients provide Feishu secrets.
+
+Bill-field parsing splits by `AI_ENABLED`:
+
+- `AI_ENABLED=false` (default): this service does not parse accounting fields; Feishu-side automations generate the follow-up fields
+- `AI_ENABLED=true`: the self-hosted AI pipeline takes over bill-field parsing (extract → write back `精简原始数据` → create `账单明细`), see "AI Extraction Pipeline (optional)" below
 
 ## Runtime configuration model
 
@@ -54,6 +61,7 @@ These values include:
 - `LOG_LEVEL`
 - `HTTP_TIMEOUT_SECONDS`
 - `TOKEN_REFRESH_SKEW_SECONDS`
+- AI pipeline vars (optional, off by default): `AI_ENABLED`, plus `AI_PROVIDER` / `AI_API_KEY` / `AI_MODEL` / `AI_PROFILE_FILE` (required when enabled), and optional `AI_BASE_URL` / `AI_TIMEOUT_SECONDS` / `AI_FORCE_TOOL_CALL` / `AI_DEDUP_TTL_SECONDS` / `AI_PROFILE_RELOAD_INTERVAL_SECONDS`; full semantics in [ai-pipeline.md](ai-pipeline.md)
 
 ### 2. Dynamic target registry
 
@@ -160,6 +168,55 @@ sequenceDiagram
     API->>Bitable: update target record 原始信息
     Bitable-->>API: update success
     API-->>Shortcut: success + request_id + record_id + book_alias
+```
+
+## AI Extraction Pipeline (optional)
+
+When `AI_ENABLED=true`, the service appends an AI pipeline after writing `原始信息`:
+
+1. dedup check (in-memory `sha256(alias:original_text)`; repeated requests within the TTL return `ai_status="duplicate"`)
+2. `AiExtractor` runs one structured extraction over the OCR text (anthropic / openai dual protocol, forced tool_call)
+3. `encode_fields` maps the extraction to Feishu fields guarded by the profile whitelist; unknown options fall back to `fallback`
+4. writes back the target record's `精简原始数据` (summary_field, best-effort)
+5. creates a new record in the bill table via `create_record` (idempotent `client_token`)
+
+The AI pipeline never raises: failures only surface as `ai_status="failed"`, `ai_warnings`, and log lines, and never break the completed `原始信息` write. The only AI-side 5xx is `503 AI_PROFILE_UNAVAILABLE` when the profile registry fails closed. Config and TOML schema: see [ai-pipeline.md](ai-pipeline.md).
+
+### Extended sequence diagram with the AI stage
+
+```mermaid
+sequenceDiagram
+    participant Shortcut as iPhone Shortcut
+    participant API as FastAPI webhook
+    participant Registry as TargetRegistry
+    participant Feishu as Feishu Open API
+    participant Bitable as Feishu Bitable
+    participant Pipe as AiPipeline
+    participant AiReg as AiProfileRegistry
+
+    Shortcut->>API: POST /v1/webhook/ocr\nX-Webhook-Token\noriginal_text + book_alias/year
+    API->>API: Validate webhook token
+    API->>Registry: maybe_reload()
+    Registry-->>API: current target snapshot
+    API->>Registry: resolve(book_alias/year)
+    Registry-->>API: FeishuTargetConfig
+    API->>Feishu: get/reuse tenant access token
+    Feishu-->>API: tenant_access_token
+    API->>Bitable: update target record 原始信息
+    Bitable-->>API: update success
+    Note over API,Pipe: The AI stage below runs only when AI_ENABLED=true
+    API->>AiReg: maybe_reload() + get_snapshot()
+    AiReg-->>API: AiProfileSnapshot (profile + whitelists)
+    API->>Pipe: run(original_text, target, profile, whitelists)
+    Pipe->>Pipe: dedup check sha256(alias:original_text)
+    Pipe->>Pipe: AiExtractor structured extraction (tool_call)
+    Pipe->>Pipe: encode_fields (whitelist + fallback)
+    Pipe->>Bitable: update 精简原始数据 (summary_field)
+    Bitable-->>Pipe: update success
+    Pipe->>Bitable: create_record 账单明细 (idempotent client_token)
+    Bitable-->>Pipe: record created
+    Pipe-->>API: PipelineResult(ai_status, bill_record_id, warnings)
+    API-->>Shortcut: success + record_id + book_alias + ai_status + ai_record_id
 ```
 
 ## Security boundary

@@ -219,3 +219,43 @@ Each section uses the same structure:
 - keep one clear runtime source of truth
 - update the target registry and verify immediately with one real request
 - avoid mixing old legacy env target values with dynamic mode unless intentional
+
+## 12. AI pipeline troubleshooting
+
+The entries below only apply when `AI_ENABLED=true`. An AI pipeline failure never turns the webhook into a 5xx: `原始信息` is already written, and the failure shows up in the response's `ai_status="failed"`, `ai_warnings`, and the service logs.
+
+### `ai_status="failed"` with `stage=validate` in the logs
+
+- Root cause: the AI returned field values in an invalid format
+- Fix: inspect the AI-returned field values; the date must be `YYYY-MM-DD` or `YYYY-MM-DD HH:mm`, and the amount must be a number greater than 0
+- Prevention: spell out the format constraints in the profile field prompts, then verify with a `POST /admin/ai/test` dry run after each change
+
+### `ai_status="failed"` with `stage=parse` in the logs
+
+- Root cause: the AI relay does not support tool_call, so the service never receives structured arguments
+- Fix: set `AI_FORCE_TOOL_CALL=false` to fall back to text parsing, or check whether the relay supports function calling
+- Prevention: pick a model and relay that support tool_call; the official APIs need no extra handling
+
+### Feishu returns `TextFieldConvFail`
+
+- Root cause: the Feishu column type does not match the type configured in the profile; a text column rejects numbers
+- Fix: change the Feishu column to text, or change the field type in the profile to a numeric type
+- Prevention: after changing a profile field type, re-check the matching Feishu column type
+
+### Feishu returns `NumberFieldConvFail`
+
+- Root cause: the reverse of the previous entry; a number column rejects text
+- Fix: change the Feishu column to a number type, or change the field type in the profile to text
+- Prevention: keep profile types aligned with the Feishu column types
+
+### The log shows `summary_field ... not found in extract table fields`
+
+- Root cause: the extract table has no column matching the configured summary_field
+- Fix: check that the extract table contains the column named by summary_field; the name must match exactly
+- Prevention: after renaming a column, update the profile and trigger one reload
+
+### The `option fallback` warning keeps appearing
+
+- Root cause: the whitelist was not refreshed after new options were added on the Feishu side
+- Fix: trigger a profile reload as described in section 10 of [ai-pipeline.md](ai-pipeline.md) (`POST /admin/config/reload`, or touch the `ai-profile.toml` mtime)
+- Prevention: refresh the whitelist right after adding `single_select` options in Feishu

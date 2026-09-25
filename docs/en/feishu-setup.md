@@ -96,6 +96,8 @@ Feishu automation remains responsible for:
 
 This boundary is intentional.
 
+**Note**: the split above only applies when `AI_ENABLED=false` (default). When `AI_ENABLED=true`, `精简原始数据` and `账单明细` are taken over by this service's self-hosted AI pipeline and no Feishu-side automations are needed for them; Feishu-side automations are only required when `AI_ENABLED=false`. See [ai-pipeline.md](ai-pipeline.md).
+
 ## Recommended automation relationship
 
 A common pattern is:

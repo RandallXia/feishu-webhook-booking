@@ -29,6 +29,11 @@
 3. 确认 `runtime/feishu-targets.toml.example` 里的示例值全部是占位符
 4. 确认没有把真实运行时文件误提交到仓库
 
+## 版本发布检查（tag 发布）
+
+- [ ] 确认 Dockerfile `apk upgrade` 已包含（安全补丁）
+- [ ] 确认 CI 触发规则：master push 只构建验证，tag push 才发布 Docker Hub
+
 ## 通过标准
 
 当以上检查都通过后，这个仓库可以作为对外开源版本发布。

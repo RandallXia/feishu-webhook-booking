@@ -216,3 +216,43 @@
 - 保持一套清晰的运行时真相来源
 - 更新目标注册表后，立刻用一条真实请求验证
 - 除非有意为之，否则不要把旧版固定目标 env 与动态模式混用
+
+## 12. AI 提取管线排障
+
+以下条目仅在 `AI_ENABLED=true` 时相关。AI 管线失败不会让 webhook 返回 5xx：`原始信息` 已写入，失败信息体现在响应的 `ai_status="failed"`、`ai_warnings` 与服务日志中。
+
+### `ai_status="failed"` 且日志 `stage=validate`
+
+- 根因：AI 返回的字段值格式不合规
+- 修法：检查 AI 返回的字段值格式，重点确认日期必须是 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:mm`、金额必须是大于 0 的数字
+- 预防：在 profile 的字段 prompt 里写清格式约束，改完后用 `POST /admin/ai/test` 做 dry-run 验证
+
+### `ai_status="failed"` 且日志 `stage=parse`
+
+- 根因：AI 中转不支持 tool_call，服务拿不到结构化参数
+- 修法：设置 `AI_FORCE_TOOL_CALL=false` 走文本兜底解析，或检查中转是否支持 function calling
+- 预防：选用支持 tool_call 的模型与中转；官方 API 默认开启即无需处理
+
+### 飞书报 `TextFieldConvFail`
+
+- 根因：飞书表列类型与 profile 中配置的 type 不匹配，text 列不接受数字
+- 修法：把飞书表列类型改成 text，或把 profile 中对应字段 type 改成数字类型
+- 预防：修改 profile 字段类型后，同步核对飞书表列类型
+
+### 飞书报 `NumberFieldConvFail`
+
+- 根因：与上一条相反，数字列不接受文本
+- 修法：把飞书表列类型改成数字，或把 profile 中对应字段 type 改成 text
+- 预防：同上，profile type 与飞书列类型保持一致
+
+### 日志出现 `summary_field ... not found in extract table fields`
+
+- 根因：提取表里没有 summary_field 配置的那一列
+- 修法：检查提取表是否存在 summary_field 配置的列，列名必须完全一致
+- 预防：改列名后同步更新 profile，并触发一次 reload
+
+### `option fallback` warning 反复出现
+
+- 根因：飞书侧新增选项后白名单未刷新
+- 修法：按 [AI 提取管线](ai-pipeline.md) 第 10 节触发 profile 重载（`POST /admin/config/reload` 或改动 `ai-profile.toml` 的 mtime）
+- 预防：在飞书侧新增 `single_select` 选项后，立刻刷新白名单

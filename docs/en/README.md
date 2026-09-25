@@ -16,18 +16,15 @@ This service only handles a very narrow workflow:
 3. The service validates a shared token
 4. The service resolves the target book by `book_alias` or `year`
 5. The service calls Feishu Open API to update `原始信息` on the selected record
-6. Existing Feishu automations continue to generate:
-   - `记录时间`
-   - `精简原始数据`
-   - `账单明细`
+6. When `AI_ENABLED=true`, this service takes over the following steps: AI extracts bill fields → writes back `精简原始数据` → creates a `账单明细` record
+   When `AI_ENABLED=false` (default), existing Feishu automations continue to generate those fields
 
 The service intentionally does **not**:
 
-- parse accounting fields
-- generate `记录时间`
-- generate `精简原始数据`
-- write `账单明细`
 - let clients send Feishu credentials or internal identifiers
+- parse accounting fields (only when `AI_ENABLED=false`; once enabled, the self-hosted AI pipeline takes over)
+
+See [ai-pipeline.md](ai-pipeline.md) for the bill-field extraction pipeline.
 
 ## Documentation
 

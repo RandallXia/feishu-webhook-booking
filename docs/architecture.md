@@ -18,6 +18,8 @@ This service is a narrow FastAPI webhook bridge between iPhone Shortcuts OCR and
 7. Service updates the selected fixed record field `原始信息`
 8. Existing Feishu automation continues to generate follow-up fields
 
+第 8 步仅在 `AI_ENABLED=false`（默认）时成立；`AI_ENABLED=true` 时由本服务的 AI 提取管线接管后续字段生成，见下文「AI 提取管线（可选）」。
+
 ## 职责边界
 
 本服务刻意只做三件事：
@@ -26,7 +28,12 @@ This service is a narrow FastAPI webhook bridge between iPhone Shortcuts OCR and
 - 解析一个服务端预配置的飞书目标
 - 把 `原始信息` 写入该目标记录
 
-本服务**不会**解析账单字段、不会每次请求都创建新记录，也不会允许客户端提供飞书敏感凭据。
+本服务**不会**每次请求都创建新记录，也不会允许客户端提供飞书敏感凭据。
+
+账单字段解析按 `AI_ENABLED` 分两种情况：
+
+- `AI_ENABLED=false`（默认）：本服务不解析账单字段，由飞书侧自动化生成后续字段
+- `AI_ENABLED=true`：由自托管 AI 管线接管账单字段解析（提取 → 写回 `精简原始数据` → 创建 `账单明细`），见下文「AI 提取管线（可选）」
 
 ## 运行时配置模型
 
@@ -54,6 +61,7 @@ This service is a narrow FastAPI webhook bridge between iPhone Shortcuts OCR and
 - `LOG_LEVEL`
 - `HTTP_TIMEOUT_SECONDS`
 - `TOKEN_REFRESH_SKEW_SECONDS`
+- AI 管线变量（可选，默认关闭）：`AI_ENABLED`，以及开启后必填的 `AI_PROVIDER` / `AI_API_KEY` / `AI_MODEL` / `AI_PROFILE_FILE`，可选的 `AI_BASE_URL` / `AI_TIMEOUT_SECONDS` / `AI_FORCE_TOOL_CALL` / `AI_DEDUP_TTL_SECONDS` / `AI_PROFILE_RELOAD_INTERVAL_SECONDS`，完整语义见 [AI 提取管线](ai-pipeline.md)
 
 ### 2. 动态目标注册表
 
@@ -160,6 +168,55 @@ sequenceDiagram
     API->>Bitable: update target record 原始信息
     Bitable-->>API: update success
     API-->>Shortcut: success + request_id + record_id + book_alias
+```
+
+## AI 提取管线（可选）
+
+当 `AI_ENABLED=true` 时，服务在写入 `原始信息` 之后追加一段 AI 管线：
+
+1. 去重检查（内存 `sha256(alias:original_text)`，TTL 内重复请求直接返回 `ai_status="duplicate"`）
+2. `AiExtractor` 对 OCR 文本做一次结构化提取（anthropic / openai 双协议，强制 tool_call）
+3. `encode_fields` 按 profile 白名单把提取结果编码为飞书字段，未命中选项回落到 `fallback`
+4. 写回目标记录的 `精简原始数据`（summary_field，尽力而为）
+5. 在账单明细表 `create_record` 新建一条记录（`client_token` 幂等）
+
+AI 管线永不抛出异常：失败只会体现在响应的 `ai_status="failed"`、`ai_warnings` 与日志中，不影响已完成的 `原始信息` 写入。唯一的 AI 侧 5xx 是 profile 注册表 fail-closed 时的 `503 AI_PROFILE_UNAVAILABLE`。配置与 TOML schema 见 [AI 提取管线](ai-pipeline.md)。
+
+### AI 阶段扩展时序图
+
+```mermaid
+sequenceDiagram
+    participant Shortcut as iPhone Shortcut
+    participant API as FastAPI webhook
+    participant Registry as TargetRegistry
+    participant Feishu as Feishu Open API
+    participant Bitable as Feishu Bitable
+    participant Pipe as AiPipeline
+    participant AiReg as AiProfileRegistry
+
+    Shortcut->>API: POST /v1/webhook/ocr\nX-Webhook-Token\noriginal_text + book_alias/year
+    API->>API: Validate webhook token
+    API->>Registry: maybe_reload()
+    Registry-->>API: current target snapshot
+    API->>Registry: resolve(book_alias/year)
+    Registry-->>API: FeishuTargetConfig
+    API->>Feishu: get/reuse tenant access token
+    Feishu-->>API: tenant_access_token
+    API->>Bitable: update target record 原始信息
+    Bitable-->>API: update success
+    Note over API,Pipe: 以下 AI 阶段仅 AI_ENABLED=true 时执行
+    API->>AiReg: maybe_reload() + get_snapshot()
+    AiReg-->>API: AiProfileSnapshot (profile + whitelists)
+    API->>Pipe: run(original_text, target, profile, whitelists)
+    Pipe->>Pipe: dedup check sha256(alias:original_text)
+    Pipe->>Pipe: AiExtractor structured extraction (tool_call)
+    Pipe->>Pipe: encode_fields (whitelist + fallback)
+    Pipe->>Bitable: update 精简原始数据 (summary_field)
+    Bitable-->>Pipe: update success
+    Pipe->>Bitable: create_record 账单明细 (idempotent client_token)
+    Bitable-->>Pipe: record created
+    Pipe-->>API: PipelineResult(ai_status, bill_record_id, warnings)
+    API-->>Shortcut: success + record_id + book_alias + ai_status + ai_record_id
 ```
 
 ## 安全边界
