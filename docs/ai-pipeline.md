@@ -249,7 +249,7 @@ Shortcut 可用如下文本模板生成「¥42 餐饮 已入账」通知：
 ## 7. 配置页使用 / Config page usage
 
 1. 浏览器打开 `http://<host>:2398/admin/ai`
-2. 在页面顶部填入 `CONFIG_RELOAD_TOKEN`
+2. 在页面顶部填入 `CONFIG_RELOAD_TOKEN`（首次部署时页面只显示「初始化设置」引导卡，见第 12 节）
 3. 页面会调 `GET /admin/ai/profile` 渲染当前 profile 字段映射 + 白名单 + registry generation
 4. 在「Dry run」输入框粘贴 OCR 文本，点测试 → 调 `POST /admin/ai/test`，下方显示提取的 7 字段 + 编码后的 `bill_fields` + warnings
 5. 改完 `ai-profile.toml` 后点「Reload」→ 调 `POST /admin/config/reload`，强制刷新 registry 快照
@@ -335,9 +335,27 @@ https://xxx.feishu.cn/base/{app_token}?table={table_id}&view=...
 
 ## 12. 配置界面 / Config UI
 
-`/admin/ai` 页面除第 7 节的 dry-run + 手动 reload 外，还提供可视化的 targets / profile / env 编辑能力。本节描述该界面的使用约定与限制。
+`/admin/ai` 页面按卡片组织：管理令牌、配置概览、AI 连接、提取表配置、账单表配置、提示词测试（dry-run）、OCR 流程测试。除第 7 节的 dry-run + 手动 reload 外，还提供可视化的 targets / profile / env 编辑能力。本节描述该界面的使用约定与限制。
 
-The `/admin/ai` page also provides visual editing of targets / profile / env (beyond the dry-run + manual reload in section 7). This section covers the UI's usage contracts and limits.
+The `/admin/ai` page is organized as cards: admin token, profile overview, AI connection, extract-table config, bill-table config, prompt tester (dry-run), and OCR flow tester. Beyond the dry-run + manual reload in section 7, it also provides visual editing of targets / profile / env. This section covers the UI's usage contracts and limits.
+
+### 首次部署引导 / First-run onboarding
+
+首次打开页面时（浏览器 localStorage 里没有任何管理令牌），UI 不显示报错，而是只渲染一张「初始化设置」引导卡，其余卡片全部隐藏：
+
+1. 先在运行环境的 env 文件里设置 `CONFIG_RELOAD_TOKEN`（服务侧操作）
+2. 把令牌值填入引导卡，点「开始使用」
+3. 令牌存入 localStorage 并自动刷新页面 → 进入正常管理界面
+
+令牌只保存在本机浏览器的 localStorage。已保存的令牌失效时（任一 API 返回 401），UI 会清掉它并重新显示引导卡，提示「令牌不正确，请重新输入」。
+
+On first open (no admin token in the browser's localStorage yet), the UI shows a single "Initial Setup" onboarding card instead of errors; all other cards stay hidden:
+
+1. Set `CONFIG_RELOAD_TOKEN` in the runtime env file first (done on the service side)
+2. Enter the token value in the card and click "Get Started"
+3. The token is stored in localStorage and the page reloads into the normal admin UI
+
+The token lives only in the browser's localStorage. If a stored token becomes invalid (any API returns 401), the UI clears it and shows the setup card again with an "invalid token, please re-enter" hint.
 
 ### URL 格式 / URL format
 
@@ -356,17 +374,99 @@ Only direct `/base/{app_token}?table={table_id}` links are supported (copy from 
 
 ### 配置流程简述 / Config flow
 
+配置按「提取表」与「账单表」两张卡片拆分，各自独立保存：
+
+**提取表配置 / Extract table config**
+
+1. 账本别名增删改：每条 alias 一行，行内走 URL 解析 → 选表 → 记录选择器（`GET /admin/feishu/records` 分页拉取，每条带 `preview`）
+2. 「保存全部账本」→ `PUT /admin/config/targets`（校验 + 原子写 + 热重载）
+3. 「摘要字段」下拉：从默认账本对应提取表的真实字段列表填充（`GET /admin/feishu/fields`）；profile 未指定时按字段名含「精简/摘要」自动预选。这是唯一 `target=extract` 映射的编辑入口（保存随账单表卡片的「保存配置」一并写入 profile）
+
+**账单表配置 / Bill table config**
+
 1. 粘贴 URL → `POST /admin/feishu/parse-url` 解析出 `app_token` + `table_id`
 2. 选表 → `GET /admin/feishu/tables` 列出该 app 下的表
-3. 选记录 → `GET /admin/feishu/records` 分页拉取记录列表（每条带 `preview`）
-4. 字段映射 → `GET /admin/feishu/fields` 拉取字段元信息，UI 自动推导预填映射
-5. 保存 → 校验 + 原子写（tmp + `os.replace`）+ 热重载（registry.reload）
+3. 字段列表 → `GET /admin/feishu/fields` 拉取该表真实字段，渲染表驱动映射（见下节）
+4. 「保存配置」→ 校验 + 原子写（tmp + `os.replace`）+ 热重载（registry.reload）
+
+Config is split across two cards ("extract table" and "bill table"), each saved independently:
+
+**Extract table config**
+
+1. Alias CRUD: one row per alias; each row runs URL parse → table pick → record picker (`GET /admin/feishu/records`, paginated, each with a `preview`)
+2. "Save All" → `PUT /admin/config/targets` (validate + atomic write + hot reload)
+3. "Summary Field" dropdown: populated from the real field list of the default alias's extract table (`GET /admin/feishu/fields`); auto-prefilled by the 精简/摘要 name heuristic when the profile has none. This is the only editor for the `target=extract` mapping (persisted with the bill card's "Save Profile")
+
+**Bill table config**
 
 1. Paste URL → `POST /admin/feishu/parse-url` extracts `app_token` + `table_id`
 2. Pick table → `GET /admin/feishu/tables` lists tables under the app
-3. Pick record → `GET /admin/feishu/records` paginates records (each with a `preview`)
-4. Field mapping → `GET /admin/feishu/fields` fetches field metadata; the UI auto-derives a prefill mapping
-5. Save → validate + atomic write (tmp + `os.replace`) + hot reload (registry.reload)
+3. Field list → `GET /admin/feishu/fields` fetches the table's real fields and renders the table-driven mapping (below)
+4. "Save Profile" → validate + atomic write (tmp + `os.replace`) + hot reload (registry.reload)
+
+### 表驱动字段映射（反向映射）/ Table-driven field mapping (reverse mapping)
+
+账单字段映射不再以固定的 AI 键为行，而是**以飞书字段为行**（反向映射）：
+
+- 选定账单表后，UI 拉取该表真实字段列表，每个字段渲染一行：只读字段名 + 飞书类型标签
+- 每行一个「AI 键映射」下拉：选择该字段映射到哪个提取键（`description` / `flow_type` / `amount` / `category` / `payment_method` / `bill_date` / `raw_source`），或「跳过」；跳过的行不会写入保存的 profile
+- 提取表的 summary 字段不在此表中——已分离到「提取表配置」区的「摘要字段」下拉（见上）
+
+Bill-field mapping is no longer a fixed list of AI-key rows; rows are now **real Feishu fields** (reverse mapping):
+
+- After a bill table is selected, the UI fetches its real field list and renders one row per field: read-only field name + Feishu type tag
+- Each row carries an "AI key" dropdown: pick which extraction key this field maps to (`description` / `flow_type` / `amount` / `category` / `payment_method` / `bill_date` / `raw_source`) or "Skip"; skipped rows are dropped from the saved profile
+- The extract table's summary field is not in this table — it moved to the "Summary Field" dropdown in the extract-table config card (above)
+
+其余列自动预填，均可手动覆盖：
+
+| 列 | 自动预填规则 |
+|----|--------------|
+| 类型 | 字段带选项或飞书类型 `single_select` → `single_select`；`number` → `number`；`date` / `datetime` → `date`；其余 → `text` |
+| 回退 | `single_select` 默认取该字段真实选项的第一个；非 single_select 不可用 |
+| 启用 | 默认开启（语义见第 13 节） |
+
+Remaining columns are auto-prefilled and can be overridden:
+
+| Column | Auto-prefill rule |
+|--------|-------------------|
+| Type | Field has options or Feishu type `single_select` → `single_select`; `number` → `number`; `date` / `datetime` → `date`; otherwise `text` |
+| Fallback | For `single_select`, defaults to the field's first real option; N/A for other types |
+| Enable | On by default (semantics in section 13) |
+
+**自动推导**：字段列表加载时（以及点「重新推导」时）按字段名关键词自动建立映射——含「金额」→ `amount`（number）；含「日期」→ `bill_date`（「账单日期」优先于普通「日期」）；含「分类」→ `category`；同时含「收支」「类型」→ `flow_type`；含「支付」或「途径」→ `payment_method`；含「描述」→ `description`；含「原始采集」→ `raw_source`（passthrough）。
+
+**匹配芯片**：每行字段名旁的芯片标记映射来源——`✓ 自动匹配`（自动推导命中）、`● 手动`（用户手动改过下拉）、`○ 跳过`（未映射）。表头上方显示「已匹配 N 字段」；点「重新推导」放弃手动修改、按关键词重新推导；手动改过任何一个下拉都会把该行芯片变为「● 手动」。
+
+**Auto-derive**: when the field list loads (and when "Re-derive" is clicked), the UI builds a mapping from field-name keywords — 含「金额」→ `amount` (number); 含「日期」→ `bill_date` (账单日期 beats a plain 日期); 含「分类」→ `category`; 收支+类型 → `flow_type`; 支付 or 途径 → `payment_method`; 含「描述」→ `description`; 含「原始采集」→ `raw_source` (passthrough).
+
+**Match chips**: the chip next to each field name marks where the mapping came from — `✓ 自动匹配` (auto, keyword-derived), `● 手动` (manual, user touched the dropdown), `○ 跳过` (skip, unmapped). A "matched N fields" count sits above the table; "Re-derive" discards manual edits and re-runs the keyword pass; touching any dropdown demotes that row's chip to manual.
+
+保存时（`PUT /admin/config/profile`）：跳过的行被丢弃；summary 行由「摘要字段」下拉的值自动重建（`type=passthrough`、`source=summary`、常开）；`prompt_header` 取表格下方的全局提示词输入框。
+
+On save (`PUT /admin/config/profile`): skipped rows are dropped; the summary spec is rebuilt from the "Summary Field" dropdown (`type=passthrough`, `source=summary`, always enabled); `prompt_header` comes from the prompt-header box below the table.
+
+### OCR 流程测试 / OCR flow tester
+
+「OCR 流程测试」卡片直接调用**真实 webhook 路径** `POST /v1/webhook/ocr`：输入 OCR 文本 + `X-Webhook-Token`（与 iPhone Shortcut 中配置的一致，单独保存在本机 localStorage），点「发送」，请求体为 `{original_text, source: "admin-ocr-flow-test"}`。
+
+与第 7 节的 dry-run 不同，这条链路是**真实写入**：写「原始信息」→ AI 提取 → 写「精简原始数据」→ 创建「账单明细」记录。同一文本在 `AI_DEDUP_TTL_SECONDS`（默认 300s）内重发会命中去重（`ai_status="duplicate"`），不会重复创建账单记录。
+
+结果区展示：
+
+- HTTP 状态标签（200 绿色 / 其他红色）+ 顶部横幅结论：`ai_status="succeeded"` → 「流程成功，请到飞书账本查看新纪录」；`failed` → 「原始信息已写入，但 AI 阶段失败」；非 200 → HTTP 状态 + 错误消息
+- 响应字段逐行渲染：`success` / `request_id` / `record_id (原始信息)` / `book_alias` / `ai_status`（✓/✗/⏭ 前缀）/ `ai_record_id (账单明细)` / `ai_extracted` 各键 / `ai_warnings` 各条
+- 可折叠的「原始 JSON / Raw JSON」
+
+The "OCR Flow Tester" card calls the **real webhook path** `POST /v1/webhook/ocr`: enter OCR text + the `X-Webhook-Token` (the same token configured in the iPhone Shortcut, stored separately in the browser's localStorage) and click Send. The body is `{original_text, source: "admin-ocr-flow-test"}`.
+
+Unlike the dry-run in section 7, this is a **real write**: it writes 原始信息, runs AI extraction, writes 精简原始数据, and creates a 账单明细 record. Resending the same text within `AI_DEDUP_TTL_SECONDS` (default 300s) hits dedup (`ai_status="duplicate"`) and does not create a second bill record.
+
+The result panel shows:
+
+- An HTTP status tag (green for 200, red otherwise) + a banner verdict: `ai_status="succeeded"` → "flow succeeded, check Feishu for the new record"; `failed` → "原始信息 written but AI stage failed"; non-200 → HTTP status + error message
+- Response fields rendered line by line: `success` / `request_id` / `record_id (原始信息)` / `book_alias` / `ai_status` (✓/✗/⏭ prefix) / `ai_record_id (账单明细)` / each `ai_extracted` key / each `ai_warnings` entry
+- A collapsible "Raw JSON" block
 
 ### AI 连接 / AI connection
 
@@ -435,14 +535,3 @@ enabled = false                  # 禁用此字段：AI 仍提取但不写入飞
 ```
 
 `enabled` 键缺省为 `true`，因此存量 TOML 配置（无此键）行为零变化——升级后无需迁移。配置界面保存时会经 `dump_profile` 序列化写出该键（无论 true/false 都显式写出，便于界面回显）。
-
-The `enabled` key defaults to `true`, so existing TOML profiles (without the key) behave identically — no migration needed on upgrade. A config-UI save serializes the key via `dump_profile` (written explicitly whether true or false, for clean UI roundtrip).
-- `GET /admin/feishu/fields` — list field metadata for a table (type + is_primary)
-- `GET /admin/feishu/records` — paginate records, each with a `preview` (is_primary field value, truncated to 80 chars)
-- `POST /admin/feishu/parse-url` — parse a `/base/{app_token}?table={table_id}` direct link; wiki links → 422 `UNSUPPORTED_URL`
-- `GET /admin/config/profile` — read the editable profile shape (degrades 200 + profile=null when fail-closed)
-- `PUT /admin/config/profile` — validate + atomic save + hot reload (base_generation guard; concurrent → 409 `STALE_WRITE`)
-- `GET /admin/config/targets` — read the targets snapshot (legacy mode returns one; fail-closed degrades 200 + targets=null)
-- `PUT /admin/config/targets` — full-replace save + hot reload (legacy mode → 409 `LEGACY_MODE`)
-- `GET /admin/config/env` — read AI connection settings (secrets return only `*_set` booleans, never values)
-- `PUT /admin/config/env` — line-based env file edit (preserves comments + non-AI lines; no file → 409 `ENV_FILE_NOT_FOUND`)
