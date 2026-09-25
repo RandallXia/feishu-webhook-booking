@@ -48,8 +48,25 @@
       body: options.body,
     }).then(function(response) {
       if (response.status === 401) {
-        alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
-        if (tokenInput) tokenInput.focus();
+        // Stored token is invalid → clear it and show the setup card so the
+        // user can re-enter. Bypass alert (the setup card IS the recovery
+        // surface) and surface the "wrong token" hint on the card itself.
+        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+        var setupCard = document.getElementById('setup-card');
+        var setupHint = document.getElementById('setup-token-hint');
+        if (setupCard) {
+          setupCard.style.display = '';
+          var sections = document.querySelectorAll('.card:not(#setup-card)');
+          for (var s = 0; s < sections.length; s++) sections[s].style.display = 'none';
+          if (setupHint) {
+            while (setupHint.firstChild) setupHint.removeChild(setupHint.firstChild);
+            setupHint.appendChild(document.createTextNode('令牌不正确，请重新输入 / Invalid token, please re-enter'));
+            setupHint.style.display = 'block';
+          }
+        } else {
+          alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
+          if (tokenInput) tokenInput.focus();
+        }
         return response.text().then(function() {
           var err = new Error('Unauthorized');
           err.status = 401;
@@ -1315,71 +1332,93 @@
     return mapping;
   }
 
+  // Single-field derivation: returns the ai_key this field's name maps to
+  // (or null). Does NOT honor the 账单日期 priority rule — that rule needs
+  // multiple fields and is applied by autoDerive; this helper is for callers
+  // that need a one-shot best guess for a single field.
+  function autoDeriveKey(fieldName, fieldType) {
+    var derived = autoDerive([{ name: fieldName, type: fieldType, options: null, is_primary: false }]);
+    var keys = Object.keys(derived);
+    return keys.length ? keys[0] : null;
+  }
+
   function renderBillRows(fields) {
     // Before re-rendering, fold the current DOM values back into
     // billExistingFields so unsaved edits survive a table-switch or
     // re-derive (the new rows read from billExistingFields first).
     billCaptureDomIntoExisting();
     while (billFieldsList.firstChild) billFieldsList.removeChild(billFieldsList.firstChild);
+    // Reverse orientation: each Feishu field is a row, with an AI-key dropdown.
+    // autoDerive produces ai_key → {feishu_field, type, fallback}; flip it to
+    // feishu_field → ai_key so each row can read its pre-filled mapping.
     var derived = autoDerive(fields || []);
-    for (var i = 0; i < AI_KEYS.length; i++) {
-      var key = AI_KEYS[i];
-      // summary is rendered in the extract-section dropdown (#summary-field-
-      // select), not the bill mapping table. Skip it here so the table shows
-      // only the 7 bill-target fields. AI_KEYS stays 8 elements (parity lock).
-      if (key === 'summary') continue;
-      var existing = billExistingFields[key];
-      var prefilled = derived[key];
-      var spec;
-      if (existing && existing.feishu_field) {
-        spec = existing;
-      } else if (prefilled) {
-        // mark derived so the chip shows "auto" on first paint.
-        spec = { feishu_field: prefilled.feishu_field, type: prefilled.type,
-                 fallback: prefilled.fallback, prompt: existing ? existing.prompt : '',
-                 enabled: existing ? existing.enabled : true, _derived: true };
-      } else {
-        spec = existing || { feishu_field: '', type: 'text', fallback: null, enabled: true };
+    var fieldToAiKey = {};
+    for (var k in derived) {
+      if (Object.prototype.hasOwnProperty.call(derived, k) && derived[k] && derived[k].feishu_field) {
+        fieldToAiKey[derived[k].feishu_field] = k;
       }
-      billFieldsList.appendChild(renderBillRow(key, spec, fields || []));
+    }
+    for (var i = 0; i < (fields || []).length; i++) {
+      var f = fields[i];
+      // Find the existing mapping for this feishu field, if any.
+      var existingAiKey = null;
+      var existingSpec = null;
+      for (var key in billExistingFields) {
+        if (Object.prototype.hasOwnProperty.call(billExistingFields, key) &&
+            billExistingFields[key] && billExistingFields[key].feishu_field === f.name) {
+          existingAiKey = key;
+          existingSpec = billExistingFields[key];
+          break;
+        }
+      }
+      // Otherwise use the auto-derived mapping.
+      var mappedAiKey = existingAiKey || fieldToAiKey[f.name] || null;
+      billFieldsList.appendChild(renderBillRow(f, mappedAiKey, fields || [], existingSpec, !existingAiKey && !!fieldToAiKey[f.name]));
     }
     billUpdateMatchedCount();
   }
 
   // billExistingFields holds the last GET response's per-key spec so a
   // re-render after auto-derive or table-select change preserves the user's
-  // loaded configuration rather than resetting to empty.
+  // loaded configuration rather than resetting to empty. Keyed by ai_key.
   var billExistingFields = {};
 
-  // Fold the current DOM row values (feishu_field/type/fallback/prompt/enabled)
-  // back into billExistingFields. Called before any re-render so unsaved edits
-  // survive a table-switch or re-derive. summary is always enabled (hard lock).
+  // Fold the current DOM row values (ai_key/type/fallback/prompt/enabled)
+  // back into billExistingFields, keyed by ai_key. Called before any re-render
+  // so unsaved edits survive a table-switch or re-derive. Rows with no AI-key
+  // selection (skipped Feishu fields) are dropped — they contribute nothing
+  // to the PUT body. summary is always enabled (hard lock in the extract
+  // section dropdown; not part of this table).
   function billCaptureDomIntoExisting() {
     if (!billFieldsList) return;
     var rows = billFieldsList.querySelectorAll('.bill-row');
+    var next = {};
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      var aiKey = r.getAttribute('data-ai-key');
-      var ffSel = r.querySelector('.feishu-field-select');
+      var aiKeySel = r.querySelector('.ai-key-select');
       var typeSel = r.querySelector('.type-select');
       var fbSel = r.querySelector('.fallback-select');
       var pInput = r.querySelector('.prompt-input');
       var cb = r.querySelector('.enable-toggle');
-      if (!aiKey || !ffSel) continue;
+      if (!aiKeySel || !aiKeySel.value) continue;
+      var aiKey = aiKeySel.value;
       var type = typeSel ? typeSel.value : 'text';
       var fb = (type === 'single_select' && fbSel && fbSel.value) ? fbSel.value : null;
-      billExistingFields[aiKey] = {
-        feishu_field: ffSel.value || '',
+      next[aiKey] = {
+        feishu_field: r.getAttribute('data-feishu-field') || '',
         type: type,
         fallback: fb,
         prompt: pInput ? pInput.value : '',
-        enabled: aiKey === 'summary' ? true : (cb ? cb.checked : true),
+        enabled: cb ? cb.checked : true,
       };
     }
+    billExistingFields = next;
   }
 
-  // Update #bill-matched-count: N = rows where feishu_field is non-empty AND
-  // the toggle is on. summary counts only if its feishu_field is set.
+  // Update #bill-matched-count: N = rows whose AI-key dropdown is non-empty
+  // AND the toggle is on; total = number of Feishu fields rendered. The
+  // denominator is the row count, not a fixed 7 (the table is now Feishu-field
+  // driven, so the count varies with the selected table).
   function billUpdateMatchedCount() {
     if (!billFieldsList) return;
     var countEl = document.getElementById('bill-matched-count');
@@ -1388,13 +1427,12 @@
     var n = 0;
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      var ffSel = r.querySelector('.feishu-field-select');
+      var keySel = r.querySelector('.ai-key-select');
       var cb = r.querySelector('.enable-toggle');
-      if (ffSel && ffSel.value && cb && cb.checked) n++;
+      if (keySel && keySel.value && cb && cb.checked) n++;
     }
     while (countEl.firstChild) countEl.removeChild(countEl.firstChild);
-    // 7 = bill-target fields only; summary lives in the extract-section dropdown.
-    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/7 · Matched'));
+    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/' + rows.length + ' 字段 · Matched'));
   }
 
   // Render the two token badges (app_token / table_id) into #bill-tokens.
@@ -1421,67 +1459,73 @@
     }
   }
 
-  function renderBillRow(aiKey, spec, fields) {
-    spec = spec || { feishu_field: '', type: 'text', fallback: null, enabled: true };
-    var isSummary = aiKey === 'summary';
-    var isRawSource = aiKey === 'raw_source';
-    // summary is the extract-table writeback field — hard-locked on.
-    var enabled = isSummary ? true : (spec.enabled !== false);
-    var row = el('tr', { className: 'bill-row', 'data-ai-key': aiKey });
+  // Infer a FieldSpec type from the Feishu field's type + options. Used as
+  // the initial value of the type-select when a row is first rendered; the
+  // user can override it. single_select beats text (it has stricter
+  // encoding); date/datetime → date; number → number; otherwise text.
+  function inferType(feishuType, options) {
+    if (feishuType === 'single_select' || (options && options.length)) return 'single_select';
+    if (feishuType === 'number') return 'number';
+    if (feishuType === 'date' || feishuType === 'datetime') return 'date';
+    return 'text';
+  }
+
+  // Render one Feishu-field-as-row. The row carries data-feishu-field so
+  // billGatherBody / billCaptureDomIntoExisting can read the anchor. The
+  // AI-key dropdown (ai-key-select) decides which extraction key this field
+  // maps to (or 'skip' — value '' — for unmapped fields).
+  function renderBillRow(field, mappedAiKey, allFields, existingSpec, isDerived) {
+    field = field || {};
+    var fieldName = field.name || '';
+    var fieldType = field.type || '';
+    var fieldOptions = field.options || null;
+    existingSpec = existingSpec || null;
+    // Default type: existing > inferred; default fallback: existing > first
+    // option for single_select; default prompt: existing prompt.
+    var inferredType = inferType(fieldType, fieldOptions);
+    var type = (existingSpec && existingSpec.type) ? existingSpec.type : inferredType;
+    var fb = (existingSpec && existingSpec.fallback != null)
+      ? existingSpec.fallback
+      : ((type === 'single_select' && fieldOptions && fieldOptions.length) ? fieldOptions[0] : null);
+    var prompt = (existingSpec && existingSpec.prompt) ? existingSpec.prompt : '';
+    var enabled = existingSpec ? (existingSpec.enabled !== false) : true;
+    var row = el('tr', { className: 'bill-row', 'data-feishu-field': fieldName });
     if (!enabled) row.classList.add('bill-row-disabled');
 
-    // ── 启用列：真 checkbox + CSS toggle; summary 行硬锁 + hint.
-    var enableCell = el('td', { className: 'col-enable' });
-    var toggleLabel = el('label', { className: 'toggle' });
-    var cb = el('input', { type: 'checkbox', className: 'enable-toggle' });
-    cb.checked = enabled;
-    if (isSummary) cb.disabled = true;
-    toggleLabel.appendChild(cb);
-    toggleLabel.appendChild(el('span', { className: 'toggle-track' },
-      null));
-    toggleLabel.lastChild.appendChild(el('span', { className: 'toggle-thumb' }));
-    enableCell.appendChild(toggleLabel);
-    if (isSummary) {
-      enableCell.appendChild(el('div', { className: 'enable-hint' }, '核心写回字段'));
-    }
-    row.appendChild(enableCell);
-
-    // ── AI 字段列：等宽 ai_key + summary 写回 tag + raw_source source tag.
-    var aikeyCell = el('td', { className: 'col-aikey' });
-    aikeyCell.appendChild(el('div', { className: 'aikey-label' }, aiKey));
-    if (isSummary) {
-      aikeyCell.appendChild(el('span', { className: 'target-tag target-extract' }, '写回提取表'));
-    }
-    if (isRawSource) {
-      var srcTag = el('span', { className: 'source-tag' }, 'source=summary');
-      aikeyCell.appendChild(srcTag);
-    }
-    row.appendChild(aikeyCell);
-
-    // ── 飞书字段列：下拉 + 匹配芯片 (auto/manual/none).
-    var ffCell = el('td', { className: 'col-feishu' });
-    var ffSel = el('select', { className: 'feishu-field-select' });
-    ffSel.appendChild(el('option', { value: '' }, '未映射 / Unmapped'));
-    for (var i = 0; i < fields.length; i++) {
-      var f = fields[i];
-      ffSel.appendChild(el('option', { value: f.name }, f.name));
-    }
-    // 如果值非空但不在 options 里（提取表字段或旧表字段），注入额外 option 防止浏览器重置为空
-    if (spec.feishu_field) {
-      var hasOpt = false;
-      for (var c = 0; c < ffSel.options.length; c++) {
-        if (ffSel.options[c].value === spec.feishu_field) { hasOpt = true; break; }
-      }
-      if (!hasOpt) {
-        var extra = el('option', { value: spec.feishu_field }, spec.feishu_field + '（提取表）');
-        ffSel.insertBefore(extra, ffSel.options[1] || null);
-      }
-    }
-    ffSel.value = spec.feishu_field || '';
-    ffCell.appendChild(ffSel);
+    // ── 飞书字段列：只读标签名 + 类型 tag.
+    var ffCell = el('td', { className: 'col-feishu-name' });
+    ffCell.appendChild(el('div', { className: 'field-name-label' }, fieldName));
+    if (fieldType) ffCell.appendChild(el('div', { className: 'field-type-tag' }, fieldType));
+    // match-chip on the same row: auto / manual / none.
     var chip = el('span', { className: 'match-chip' });
     ffCell.appendChild(chip);
     row.appendChild(ffCell);
+
+    // ── AI 键映射列：下拉选择目标 ai_key 或 跳过.
+    var aikeyCell = el('td', { className: 'col-ai-key' });
+    var keySel = el('select', { className: 'ai-key-select' });
+    keySel.appendChild(el('option', { value: '' }, '跳过 / Skip'));
+    // Bill-target keys only — summary lives in the extract-section dropdown.
+    var billAiKeys = ['description', 'flow_type', 'amount', 'category',
+      'payment_method', 'bill_date', 'raw_source'];
+    for (var k = 0; k < billAiKeys.length; k++) {
+      keySel.appendChild(el('option', { value: billAiKeys[k] }, billAiKeys[k]));
+    }
+    // If the loaded ai_key is not in the bill-target list (shouldn't happen
+    // for non-summary fields, but defensive), inject an extra option so the
+    // browser doesn't silently reset to '跳过'.
+    if (mappedAiKey && billAiKeys.indexOf(mappedAiKey) === -1) {
+      keySel.insertBefore(el('option', { value: mappedAiKey }, mappedAiKey + '（其他）'),
+        keySel.options[1] || null);
+    }
+    keySel.value = mappedAiKey || '';
+    aikeyCell.appendChild(keySel);
+    // raw_source carries source=summary — surface the tag so the operator
+    // knows the field is a passthrough, not an AI-extracted key.
+    if (mappedAiKey === 'raw_source') {
+      aikeyCell.appendChild(el('span', { className: 'source-tag' }, 'source=summary'));
+    }
+    row.appendChild(aikeyCell);
 
     // ── 类型列.
     var typeCell = el('td', { className: 'col-type' });
@@ -1490,7 +1534,7 @@
     for (var t = 0; t < typeOpts.length; t++) {
       typeSel.appendChild(el('option', { value: typeOpts[t] }, typeOpts[t]));
     }
-    typeSel.value = spec.type || 'text';
+    typeSel.value = type;
     typeCell.appendChild(typeSel);
     row.appendChild(typeCell);
 
@@ -1503,19 +1547,31 @@
     // ── 提示词列：textarea rows=1, CSS 展开.
     var pCell = el('td', { className: 'col-prompt' });
     var pInput = el('textarea', { className: 'prompt-input', rows: '1' });
-    pInput.value = spec.prompt || '';
+    pInput.value = prompt;
     pCell.appendChild(pInput);
     row.appendChild(pCell);
 
-    // match-chip state: auto=derived, manual=user-set, none=empty.
+    // ── 启用列：真 checkbox + CSS toggle.
+    var enableCell = el('td', { className: 'col-enable' });
+    var toggleLabel = el('label', { className: 'toggle' });
+    var cb = el('input', { type: 'checkbox', className: 'enable-toggle' });
+    cb.checked = enabled;
+    toggleLabel.appendChild(cb);
+    toggleLabel.appendChild(el('span', { className: 'toggle-track' }, null));
+    toggleLabel.lastChild.appendChild(el('span', { className: 'toggle-thumb' }));
+    enableCell.appendChild(toggleLabel);
+    row.appendChild(enableCell);
+
+    // match-chip state: auto=derived (first paint), manual=user-set, none=skip.
+    var derived = !!isDerived;
     function refreshChip() {
       while (chip.firstChild) chip.removeChild(chip.firstChild);
-      var hasField = !!ffSel.value;
-      if (!hasField) {
+      var hasKey = !!keySel.value;
+      if (!hasKey) {
         chip.classList.remove('match-auto', 'match-manual');
         chip.classList.add('match-none');
-        chip.appendChild(document.createTextNode('○ 未映射'));
-      } else if (spec._derived) {
+        chip.appendChild(document.createTextNode('○ 跳过'));
+      } else if (derived) {
         chip.classList.remove('match-manual', 'match-none');
         chip.classList.add('match-auto');
         chip.appendChild(document.createTextNode('✓ 自动匹配'));
@@ -1530,47 +1586,52 @@
     function refreshFallback() {
       while (fbSel.firstChild) fbSel.removeChild(fbSel.firstChild);
       var selType = typeSel.value;
-      var selField = ffSel.value;
-      if (selType === 'single_select' && selField) {
-        var opts = null;
-        for (var k = 0; k < fields.length; k++) {
-          if (fields[k].name === selField) { opts = fields[k].options; break; }
-        }
+      if (selType === 'single_select' && fieldOptions && fieldOptions.length) {
         fbSel.appendChild(el('option', { value: '' }, '— 无 / None —'));
-        if (opts && opts.length) {
-          for (var o = 0; o < opts.length; o++) {
-            fbSel.appendChild(el('option', { value: opts[o] }, opts[o]));
-          }
+        for (var o = 0; o < fieldOptions.length; o++) {
+          fbSel.appendChild(el('option', { value: fieldOptions[o] }, fieldOptions[o]));
         }
         fbSel.disabled = false;
       } else {
         fbSel.appendChild(el('option', { value: '' }, '— 不可用 / N/A —'));
         fbSel.disabled = true;
       }
-      fbSel.value = (selType === 'single_select' && spec.fallback) ? spec.fallback : '';
+      fbSel.value = (selType === 'single_select' && fb) ? fb : '';
     }
     refreshFallback();
-    ffSel.addEventListener('change', function() {
-      // user picked a field manually → mark manual for the chip.
-      spec._derived = false;
-      refreshChip();
-      refreshFallback();
-    });
-    typeSel.addEventListener('change', refreshFallback);
 
-    // toggle change → disabled class + control disabled (toggle stays enabled).
+    // Picking a different ai_key manually → demote to 'manual' chip.
+    keySel.addEventListener('change', function() {
+      derived = false;
+      refreshChip();
+      billUpdateMatchedCount();
+      markDirty();
+    });
+    typeSel.addEventListener('change', function() {
+      // Re-derive fallback if the user flips type to single_select.
+      fb = (typeSel.value === 'single_select' && fieldOptions && fieldOptions.length)
+        ? fieldOptions[0] : null;
+      refreshFallback();
+      markDirty();
+    });
+    fbSel.addEventListener('change', markDirty);
+    pInput.addEventListener('input', markDirty);
+
+    // toggle change → disabled class + control disabled (toggle stays live).
     cb.addEventListener('change', function() {
       var on = cb.checked;
       row.classList.toggle('bill-row-disabled', !on);
-      ffSel.disabled = !on;
+      keySel.disabled = !on;
       typeSel.disabled = !on;
       fbSel.disabled = !on;
       pInput.disabled = !on;
       chip.style.display = on ? '' : 'none';
+      billUpdateMatchedCount();
+      markDirty();
     });
-    // apply initial disabled state for non-summary rows (controls only; toggle stays live).
-    if (!enabled && !isSummary) {
-      ffSel.disabled = true;
+    // apply initial disabled state (controls only; toggle stays live).
+    if (!enabled) {
+      keySel.disabled = true;
       typeSel.disabled = true;
       fbSel.disabled = true;
       pInput.disabled = true;
@@ -1599,9 +1660,15 @@
   }
 
   function billMarkRowError(rowIndex, field) {
+    // After the reverse-orientation rewrite, the PUT body's fields[i] no
+    // longer maps cleanly to DOM row i — fields[0] is summary, fields[1..N]
+    // are mapped Feishu rows in DOM order. So translate: rowIndex 0 →
+    // summary (extract-section dropdown), rowIndex N → DOM row N-1.
     var rows = billFieldsList.querySelectorAll('.bill-row');
-    if (rowIndex >= rows.length) return;
-    var row = rows[rowIndex];
+    var domIdx = rowIndex - 1;  // skip summary
+    if (domIdx < 0) return;  // summary row errors route via summaryField path
+    if (domIdx >= rows.length) return;
+    var row = rows[domIdx];
     var sel = '.' + field + '-select';
     var input = row.querySelector(sel) || row.querySelector('.prompt-input');
     if (input) {
@@ -1650,26 +1717,30 @@
       source: 'summary',
       enabled: true,
     });
+    // Walk Feishu-field rows in DOM order. Skipped rows (empty ai-key) are
+    // omitted — they don't contribute to the PUT body. raw_source carries
+    // source=summary; everything else is a regular AI-extracted bill field.
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      var aiKey = r.getAttribute('data-ai-key');
-      var ffSel = r.querySelector('.feishu-field-select');
+      var feishuFieldName = r.getAttribute('data-feishu-field');
+      var keySel = r.querySelector('.ai-key-select');
       var typeSel = r.querySelector('.type-select');
       var fbSel = r.querySelector('.fallback-select');
       var pInput = r.querySelector('.prompt-input');
       var cb = r.querySelector('.enable-toggle');
-      var target = 'bill';
-      var source = aiKey === 'raw_source' ? 'summary' : null;
-      var fb = (typeSel.value === 'single_select' && fbSel.value) ? fbSel.value : null;
+      var aiKey = keySel ? keySel.value : '';
+      if (!aiKey) continue;
+      var typeVal = typeSel ? typeSel.value : 'text';
+      var fb = (typeVal === 'single_select' && fbSel && fbSel.value) ? fbSel.value : null;
       var enabled = cb ? cb.checked : true;
       fields.push({
         ai_key: aiKey,
-        feishu_field: ffSel.value || null,
-        type: typeSel.value,
-        target: target,
+        feishu_field: feishuFieldName || null,
+        type: typeVal,
+        target: 'bill',
         fallback: fb,
-        prompt: pInput.value || null,
-        source: source,
+        prompt: pInput ? pInput.value || null : null,
+        source: aiKey === 'raw_source' ? 'summary' : null,
         enabled: enabled,
       });
     }
@@ -2162,6 +2233,31 @@
   }
 
   // --- Init ---
+
+  // First-run gate: no token in localStorage → show setup card, hide admin
+  // sections, and short-circuit init. The setup card's button stores the
+  // token and reloads so the rest of init runs against a real token.
+  var savedToken = null;
+  try { savedToken = localStorage.getItem(TOKEN_KEY); } catch (e) {}
+  if (!savedToken) {
+    var setupCard = document.getElementById('setup-card');
+    if (setupCard) setupCard.style.display = '';
+    var sections = document.querySelectorAll('.card:not(#setup-card)');
+    for (var s = 0; s < sections.length; s++) sections[s].style.display = 'none';
+    var setupBtn = document.getElementById('setup-token-btn');
+    var setupInput = document.getElementById('setup-token-input');
+    if (setupBtn && setupInput) {
+      setupBtn.addEventListener('click', function() {
+        var v = setupInput.value.trim();
+        if (v) {
+          try { localStorage.setItem(TOKEN_KEY, v); } catch (e) {}
+          location.reload();
+        }
+      });
+    }
+    return;
+  }
+
   loadToken();
   refreshStatus();
   loadExtractTargets();

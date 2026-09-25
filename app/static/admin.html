@@ -12,6 +12,22 @@
   <h1>AI 配置管理</h1>
   <p class="subtitle">AI Config Admin — 配置浏览与编辑 / Config viewer & editor</p>
 
+  <!-- First-run setup card (shown only when no admin token is stored) -->
+  <div class="card" id="setup-card" style="display:none;">
+    <div class="card-title">初始化设置 / Initial Setup</div>
+    <p style="margin-bottom:12px;color:#515154;font-size:0.9rem;">
+      首次使用请先在运行环境的 env 文件中设置 <code>CONFIG_RELOAD_TOKEN</code>，
+      然后在下方输入该令牌。<br>
+      Set <code>CONFIG_RELOAD_TOKEN</code> in your env file first, then enter it below.
+    </p>
+    <div class="form-group">
+      <label for="setup-token-input">管理令牌 / Admin Token (CONFIG_RELOAD_TOKEN)</label>
+      <input type="text" id="setup-token-input" placeholder="CONFIG_RELOAD_TOKEN 的值" />
+      <div class="hint" id="setup-token-hint" style="display:none;"></div>
+    </div>
+    <button class="btn btn-primary" id="setup-token-btn">开始使用 / Get Started</button>
+  </div>
+
   <!-- Token card (sticky) -->
   <div class="card" id="token-card">
     <div class="card-title">管理令牌 / Admin Token</div>
@@ -118,16 +134,19 @@
     <!-- 匹配计数 + 重新推导链接 + 当前表名 -->
     <div class="bill-table-header">
       <span id="bill-table-name" class="bill-table-name"></span>
-      <span id="bill-matched-count">已匹配 0/7 · Matched</span>
+      <span id="bill-matched-count">已匹配 0 字段 · Matched</span>
       <a href="#" class="bill-derive-link" id="bill-derive-btn">重新推导 / Re-derive</a>
     </div>
-    <!-- 8 行映射表格 -->
+    <!-- 映射表格：以飞书真实字段为行，每行一个 AI 键下拉 -->
     <div class="bill-table-wrap">
       <table class="bill-table">
         <thead><tr>
-          <th class="col-enable">启用</th><th class="col-aikey">AI 字段</th>
-          <th class="col-feishu">飞书字段</th><th class="col-type">类型</th>
-          <th class="col-fallback">回退</th><th class="col-prompt">提示词</th>
+          <th class="col-feishu-name" style="width:160px">飞书字段</th>
+          <th class="col-ai-key" style="width:140px">AI 键映射</th>
+          <th class="col-type" style="width:110px">类型</th>
+          <th class="col-fallback" style="width:120px">回退</th>
+          <th class="col-prompt">提示词</th>
+          <th class="col-enable" style="width:56px">启用</th>
         </tr></thead>
         <tbody id="bill-fields-list"></tbody>
       </table>
