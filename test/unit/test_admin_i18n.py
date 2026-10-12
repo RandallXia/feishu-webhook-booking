@@ -116,9 +116,8 @@ def test_admin_js_bilingual_literal_cap():
     WHEN every「'x / y'」string literal is counted
     THEN at most 2 remain — the Plan-B migration replaced them with t() calls;
         the cap prevents the concatenated bilingual style from creeping back.
-        (Current known residual: '发送中... / Sending...' — the literal is
-        anchored by test_admin_history_ui.py's ±300-char window assertion,
-        which lives outside this change's commit scope.)
+        (Zero residuals remain after the last「发送中... / Sending...」was also
+        migrated to t('ocr.sending').)
     """
     js = _read_static("admin.js")
     # [^'\n]* — a JS single-quoted literal cannot span lines, so the match

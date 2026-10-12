@@ -219,7 +219,7 @@ def test_show_history_pending_defined_and_used():
         "loadHistory() must show the pending placeholder at its start"
     )
 
-    submit_idx = js.index("'发送中... / Sending...'")
+    submit_idx = js.index("t('ocr.sending')")
     submit_slice = js[submit_idx - 300:submit_idx + 300]
     assert re.search(r"\bshowHistoryPending\(\);", submit_slice), (
         "OCR submit path must enter the pending state when the request starts"

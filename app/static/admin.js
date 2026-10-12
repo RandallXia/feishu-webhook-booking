@@ -961,7 +961,7 @@
     ocrFlowBtn.disabled = true;
     // Clear previous result
     while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
-    ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '发送中... / Sending...'));
+    ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, t('ocr.sending')));
     showHistoryPending();
 
     fetch('/v1/webhook/ocr', {
