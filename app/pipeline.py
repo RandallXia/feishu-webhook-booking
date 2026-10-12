@@ -38,6 +38,8 @@ class PipelineResult:
     warnings: list[str]
     extracted: dict[str, object]
     dedup_hit: bool
+    summary: str | None = None
+    error: str | None = None
 
 
 class _OptionWhitelistCache:
@@ -127,6 +129,7 @@ class AiPipeline:
                 warnings=[],
                 extracted={},
                 dedup_hit=False,
+                error="internal error",
             )
 
     async def _run_impl(
@@ -185,6 +188,7 @@ class AiPipeline:
                 warnings=[],
                 extracted={},
                 dedup_hit=False,
+                error=f"extract {exc.stage}: {exc}",
             )
 
         elapsed_ms = int((time.time() - start) * 1000)
@@ -210,6 +214,7 @@ class AiPipeline:
                 warnings=[],
                 extracted={},
                 dedup_hit=False,
+                error=f"encode: {exc}",
             )
 
         # Defensive: the UI hard-locks the summary spec, but respect the
@@ -242,6 +247,7 @@ class AiPipeline:
                 warnings=warnings,
                 extracted=self._build_extracted(extraction, profile),
                 dedup_hit=False,
+                summary=extraction.summary,
             )
 
         logger.info(
@@ -269,6 +275,7 @@ class AiPipeline:
                 warnings=warnings,
                 extracted={},
                 dedup_hit=False,
+                error=f"bill create {exc.stage}: {exc}",
             )
 
         with self._dedup_lock:
@@ -287,6 +294,7 @@ class AiPipeline:
             warnings=warnings,
             extracted=extracted,
             dedup_hit=False,
+            summary=extraction.summary,
         )
 
     @staticmethod

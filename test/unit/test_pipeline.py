@@ -519,3 +519,162 @@ async def test_disabled_category_omitted_from_extracted_dict():
     assert "amount" in result.extracted
     assert "flow_type" in result.extracted
     assert "description" in result.extracted
+
+
+# ─── PipelineResult summary/error fields ─────────────────────────────────────
+
+
+def test_pipelineresult_backward_compat_positional_args():
+    """
+    GIVEN PipelineResult has two new optional fields (summary, error) with defaults
+    WHEN PipelineResult is constructed with the 5 original positional arguments
+    THEN the construction succeeds without TypeError
+      AND summary attribute is None
+      AND error attribute is None
+    """
+    result = PipelineResult(
+        "succeeded",
+        "rec123",
+        [],
+        {"amount": 42.0, "category": "餐饮"},
+        False,
+    )
+    assert result.ai_status == "succeeded"
+    assert result.bill_record_id == "rec123"
+    assert result.extracted == {"amount": 42.0, "category": "餐饮"}
+    assert result.dedup_hit is False
+    assert result.summary is None
+    assert result.error is None
+
+
+async def test_extract_failure_sets_error():
+    """
+    GIVEN a pipeline where the extractor raises AiExtractorError(stage="request")
+    WHEN run() is called
+    THEN result.ai_status == "failed"
+      AND result.error starts with "extract request:"
+    """
+    pipeline = _make_pipeline(extractor_raises=AiExtractorError("timeout", stage="request"))
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "failed"
+    assert result.error is not None
+    assert result.error.startswith("extract request:")
+
+
+async def test_encode_valueerror_sets_error():
+    """
+    GIVEN a pipeline where encode_fields raises ValueError
+    WHEN run() is called
+    THEN result.ai_status == "failed"
+      AND result.error starts with "encode: "
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    import app.pipeline as pipeline_mod
+
+    def raise_valueerror(*args, **kwargs):
+        raise ValueError("single_select fallback also not in whitelist")
+
+    monkeypatch_target = pipeline_mod.encode_fields
+    pipeline_mod.encode_fields = raise_valueerror
+
+    try:
+        result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    finally:
+        pipeline_mod.encode_fields = monkeypatch_target
+
+    assert result.ai_status == "failed"
+    assert result.error is not None
+    assert result.error.startswith("encode: ")
+
+
+async def test_bill_create_failure_sets_error():
+    """
+    GIVEN a pipeline where feishu.create_record raises FeishuClientError(stage="create_record")
+    WHEN run() is called
+    THEN result.ai_status == "failed"
+      AND result.error starts with "bill create create_record:"
+    """
+    from app.feishu_client import FeishuClientError
+
+    pipeline = _make_pipeline(
+        feishu_create_raises=FeishuClientError("upstream boom", stage="create_record"),
+    )
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "failed"
+    assert result.error is not None
+    assert result.error.startswith("bill create create_record:")
+
+
+async def test_success_path_sets_summary():
+    """
+    GIVEN a pipeline with a mocked extractor that returns a known summary
+    WHEN run() completes successfully
+    THEN result.ai_status == "succeeded"
+      AND result.summary matches the extraction's summary
+    """
+    extraction = _make_extraction(summary="星巴克 ¥35 支付宝")
+    pipeline = _make_pipeline(extractor_return=extraction)
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("星巴克 ¥35", target, profile, whitelists)
+
+    assert result.ai_status == "succeeded"
+    assert result.summary == "星巴克 ¥35 支付宝"
+
+
+async def test_dedup_hit_summary_and_error_are_none():
+    """
+    GIVEN a pipeline that has already processed a text once successfully
+    WHEN run() is called again with the same text+alias (dedup hit)
+    THEN result.ai_status == "duplicate"
+      AND result.summary is None
+      AND result.error is None
+    """
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    first = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    assert first.ai_status == "succeeded"
+
+    second = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert second.ai_status == "duplicate"
+    assert second.summary is None
+    assert second.error is None
+
+
+async def test_top_level_exception_sets_internal_error():
+    """
+    GIVEN a pipeline where the extractor raises RuntimeError (NOT AiExtractorError)
+       — this penetrates _run_impl's precise catches and hits the top-level except
+    WHEN run() is called
+    THEN result.ai_status == "failed" (run never raises)
+      AND result.error == "internal error" (fixed text, no payload leak)
+    """
+    pipeline = _make_pipeline(extractor_raises=RuntimeError("unexpected config bomb"))
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+
+    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+
+    assert result.ai_status == "failed"
+    assert result.error == "internal error"
