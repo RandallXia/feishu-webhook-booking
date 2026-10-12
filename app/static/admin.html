@@ -3,94 +3,107 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 配置管理 / AI Config Admin</title>
+<title>AI 配置管理</title>
 <link rel="icon" type="image/svg+xml" href="/admin/ai/assets/favicon.svg">
 <link rel="stylesheet" href="/admin/ai/assets/admin.css">
+<script>
+// Anti-flash i18n: apply the saved language BEFORE first paint so the page
+// never renders one language then swaps to the other. admin.js (loaded at the
+// end of <body>) reads the same class + localStorage and paints the real text.
+  try { if ((localStorage.getItem('admin_ai_lang') || 'zh') === 'en') {
+    document.documentElement.classList.add('lang-en');
+  } } catch (e) {}
+</script>
 </head>
 <body>
 <div class="container">
-  <h1>AI 配置管理</h1>
-  <p class="subtitle">AI Config Admin — 配置浏览与编辑 / Config viewer & editor</p>
+  <div class="header-row">
+    <div>
+      <h1 data-i18n="app.title">AI 配置管理</h1>
+      <p class="subtitle" data-i18n="app.subtitle">AI Config Admin — 配置浏览与编辑</p>
+    </div>
+    <button class="btn btn-secondary lang-toggle" id="lang-toggle-btn" type="button">EN</button>
+  </div>
 
   <!-- First-run setup card (shown only when no admin token is stored) -->
   <div class="card" id="setup-card" style="display:none;">
-    <div class="card-title">初始化设置 / Initial Setup</div>
+    <div class="card-title" data-i18n="setup.title">初始化设置</div>
     <p style="margin-bottom:12px;color:#515154;font-size:0.9rem;">
-      首次使用请先在运行环境的 env 文件中设置 <code>CONFIG_RELOAD_TOKEN</code>，
-      然后在下方输入该令牌。<br>
-      Set <code>CONFIG_RELOAD_TOKEN</code> in your env file first, then enter it below.
+      <span data-i18n="setup.descBeforeCode">首次使用请先在运行环境的 env 文件中设置</span>
+      <code>CONFIG_RELOAD_TOKEN</code>
+      <span data-i18n="setup.descAfterCode">，然后在下方输入该令牌。</span>
     </p>
     <div class="form-group">
-      <label for="setup-token-input">管理令牌 / Admin Token (CONFIG_RELOAD_TOKEN)</label>
-      <input type="text" id="setup-token-input" placeholder="CONFIG_RELOAD_TOKEN 的值" />
+      <label for="setup-token-input" data-i18n="setup.tokenLabel">管理令牌 (CONFIG_RELOAD_TOKEN)</label>
+      <input type="text" id="setup-token-input" data-i18n-placeholder="setup.tokenPlaceholder" placeholder="CONFIG_RELOAD_TOKEN 的值" />
       <div class="hint" id="setup-token-hint" style="display:none;"></div>
     </div>
-    <button class="btn btn-primary" id="setup-token-btn">开始使用 / Get Started</button>
+    <button class="btn btn-primary" id="setup-token-btn" data-i18n="setup.getStartBtn">开始使用</button>
   </div>
 
   <!-- Token card (first visible card) -->
   <div class="card" id="token-card">
-    <div class="card-title">管理令牌 / Admin Token</div>
+    <div class="card-title" data-i18n="token.title">管理令牌</div>
     <div class="form-group">
       <label for="token-input">X-Admin-Token</label>
-      <div class="hint">令牌仅存于本机浏览器 localStorage，不会发送到页面以外的位置 / Stored in browser localStorage only</div>
+      <div class="hint" data-i18n="token.hint">令牌仅存于本机浏览器 localStorage，不会发送到页面以外的位置</div>
       <input type="text" id="token-input" placeholder="X-Admin-Token" />
     </div>
   </div>
 
   <!-- Request history — GET /admin/ai/history card — sticks to the top while scrolling -->
   <div class="card" id="history-section">
-    <div class="card-title">记账历史 / Request History</div>
+    <div class="card-title" data-i18n="history.title">记账历史</div>
     <div id="history-banner"></div>
     <div class="history-controls">
-      <button class="btn btn-secondary" id="history-refresh-btn">刷新 / Refresh</button>
-      <label class="history-limit-label" for="history-limit-input">条数 / Entries</label>
+      <button class="btn btn-secondary" id="history-refresh-btn" data-i18n="history.refreshBtn">刷新</button>
+      <label class="history-limit-label" for="history-limit-input" data-i18n="history.limitLabel">条数</label>
       <input type="number" id="history-limit-input" class="history-limit-input" min="1" max="1000" value="200" />
     </div>
     <div id="history-list">
-      <p class="placeholder">加载中 / Loading...</p>
+      <p class="placeholder" data-i18n="history.loading">加载中...</p>
     </div>
   </div>
 
   <!-- Status bar (generation / config_valid / last_reload_error) -->
-  <div id="status-bar" class="bar-info">状态加载中 / Loading status...</div>
+  <div id="status-bar" class="bar-info" data-i18n="status.loading">状态加载中...</div>
 
   <!-- Profile card (existing viewer — migrated verbatim) -->
   <div class="card">
-    <div class="card-title">配置概览 / Profile Overview</div>
+    <div class="card-title" data-i18n="overview.title">配置概览</div>
     <div style="margin-bottom: 12px;">
-      <button class="btn btn-primary" id="load-profile-btn">加载配置 / Load Profile</button>
+      <button class="btn btn-primary" id="load-profile-btn" data-i18n="overview.loadBtn">加载配置</button>
     </div>
     <div id="profile-panel">
-      <p class="placeholder">点击"加载配置"查看当前 AI 配置 / Click "Load Profile" to view AI config</p>
+      <p class="placeholder" data-i18n="overview.placeholder">点击"加载配置"查看当前 AI 配置</p>
     </div>
   </div>
 
   <!-- AI connection section (todo 4 — grid + collapsible deployment info) -->
   <div class="card" id="ai-connection-section">
-    <div class="card-title">AI 连接 / AI Connection</div>
+    <div class="card-title" data-i18n="aiConn.title">AI 连接</div>
     <div id="env-banner"></div>
     <div id="restart-banner" class="bar-warn" style="display:none;"></div>
     <div class="ai-grid">
       <!-- provider/base_url 一行，model/timeout 一行，API Key 全宽 -->
       <div class="form-group">
-        <label for="ai-provider-select">提供商 / Provider</label>
+        <label for="ai-provider-select" data-i18n="aiConn.providerLabel">提供商</label>
         <select id="ai-provider-select">
-          <option value="">— 未设置 / Unset —</option>
+          <option value="" data-i18n="aiConn.providerUnset">— 未设置 —</option>
           <option value="anthropic">anthropic</option>
           <option value="openai">openai</option>
         </select>
       </div>
       <div class="form-group">
         <label for="ai-base-url-input">base_url</label>
-        <input type="text" id="ai-base-url-input" placeholder="留空使用官方 / Leave empty for official endpoint" />
+        <input type="text" id="ai-base-url-input" data-i18n-placeholder="aiConn.baseUrlPlaceholder" placeholder="留空使用官方" />
       </div>
       <div class="form-group">
-        <label for="ai-model-input">模型 / Model</label>
-        <input type="text" id="ai-model-input" placeholder="如 claude-3-5-sonnet / e.g. gpt-4o" />
+        <label for="ai-model-input" data-i18n="aiConn.modelLabel">模型</label>
+        <input type="text" id="ai-model-input" data-i18n-placeholder="aiConn.modelPlaceholder" placeholder="如 claude-3-5-sonnet" />
       </div>
       <div class="form-group">
-        <label for="ai-timeout-input">超时 / Timeout (秒)</label>
+        <label for="ai-timeout-input" data-i18n="aiConn.timeoutLabel">超时 (秒)</label>
         <input type="number" id="ai-timeout-input" min="1" placeholder="20" />
       </div>
       <div class="form-group ai-grid-full">
@@ -100,45 +113,45 @@
       </div>
     </div>
     <details class="env-details">
-      <summary>部署信息 / Deployment Info</summary>
+      <summary data-i18n="aiConn.deploymentInfo">部署信息</summary>
       <div id="env-other-list"></div>
     </details>
     <div class="ai-save-bar">
-      <button class="btn btn-primary" id="save-env-btn">保存 AI 连接 / Save</button>
-      <span class="hint">重启后生效 / Restart required</span>
+      <button class="btn btn-primary" id="save-env-btn" data-i18n="aiConn.saveBtn">保存 AI 连接</button>
+      <span class="hint" data-i18n="aiConn.restartHint">重启后生效</span>
     </div>
   </div>
 
   <!-- Extract-table config section (todo 9) -->
   <div class="card" id="extract-section">
-    <div class="card-title">提取表配置 / Extract Table Config</div>
+    <div class="card-title" data-i18n="extract.title">提取表配置</div>
     <div id="extract-banner"></div>
     <div style="margin-bottom: 12px;">
-      <button class="btn btn-primary" id="save-targets-btn">保存全部账本 / Save All</button>
-      <button class="btn btn-secondary" id="add-alias-btn">➕ 新增账本 / Add Alias</button>
+      <button class="btn btn-primary" id="save-targets-btn" data-i18n="extract.saveBtn">保存全部账本</button>
+      <button class="btn btn-secondary" id="add-alias-btn" data-i18n="extract.addAliasBtn">➕ 新增账本</button>
     </div>
     <div id="targets-list">
-      <p class="placeholder">点击"新增账本"或加载现有账本 / Click "Add Alias" or load existing aliases</p>
+      <p class="placeholder" data-i18n="extract.placeholder">点击"新增账本"或加载现有账本</p>
     </div>
     <!-- 摘要字段：唯一 target=extract 的字段映射，从选定提取表字段列表填充 / The single
          target=extract field mapping; populated from the selected extract table's fields -->
     <div class="form-group" id="summary-field-group">
-      <label for="summary-field-select">摘要字段 / Summary Field</label>
-      <div class="hint">提取表的「精简原始数据」回写字段 / Extract-table writeback field for 精简原始数据</div>
+      <label for="summary-field-select" data-i18n="extract.summaryFieldLabel">摘要字段</label>
+      <div class="hint" data-i18n="extract.summaryFieldHint">提取表的「精简原始数据」回写字段</div>
       <select id="summary-field-select" class="table-select" disabled></select>
     </div>
   </div>
 
   <!-- Bill-table config section (todo 3 — table + per-field toggles) -->
   <div class="card" id="bill-section">
-    <div class="card-title">账单表配置 / Bill Table Config</div>
+    <div class="card-title" data-i18n="bill.title">账单表配置</div>
     <div id="bill-banner"></div>
     <!-- 步行栏：URL→解析→表选择一行 flex -->
     <div class="bill-step-row">
       <input type="text" id="bill-url-input" class="url-input" placeholder="https://xxx.feishu.cn/base/{app_token}?table={table_id}" />
-      <button class="btn btn-secondary" id="bill-parse-btn" type="button">解析 / Parse</button>
+      <button class="btn btn-secondary" id="bill-parse-btn" type="button" data-i18n="bill.parseBtn">解析</button>
       <select id="bill-table-select" class="table-select" disabled></select>
-      <button class="btn btn-secondary" id="bill-load-tables-btn" type="button">加载表 / Load</button>
+      <button class="btn btn-secondary" id="bill-load-tables-btn" type="button" data-i18n="bill.loadTablesBtn">加载表</button>
       <div class="parse-status"></div>
       <div class="table-status"></div>
       <input type="hidden" id="bill-app-token-input" />
@@ -148,19 +161,19 @@
     <!-- 匹配计数 + 重新推导链接 + 当前表名 -->
     <div class="bill-table-header">
       <span id="bill-table-name" class="bill-table-name"></span>
-      <span id="bill-matched-count">已匹配 0 字段 · Matched</span>
-      <a href="#" class="bill-derive-link" id="bill-derive-btn">重新推导 / Re-derive</a>
+      <span id="bill-matched-count" data-i18n="bill.matchedCountInitial">已匹配 0 字段 · Matched</span>
+      <a href="#" class="bill-derive-link" id="bill-derive-btn" data-i18n="bill.deriveLink">重新推导</a>
     </div>
     <!-- 映射表格：以飞书真实字段为行，每行一个 AI 键下拉 -->
     <div class="bill-table-wrap">
       <table class="bill-table">
         <thead><tr>
-          <th class="col-feishu-name" style="width:160px">飞书字段</th>
-          <th class="col-ai-key" style="width:140px">AI 键映射</th>
-          <th class="col-type" style="width:110px">类型</th>
-          <th class="col-fallback" style="width:120px">回退</th>
-          <th class="col-prompt">提示词</th>
-          <th class="col-enable" style="width:56px">启用</th>
+          <th class="col-feishu-name" style="width:160px" data-i18n="bill.thFeishuField">飞书字段</th>
+          <th class="col-ai-key" style="width:140px" data-i18n="bill.thAiKey">AI 键映射</th>
+          <th class="col-type" style="width:110px" data-i18n="bill.thType">类型</th>
+          <th class="col-fallback" style="width:120px" data-i18n="bill.thFallback">回退</th>
+          <th class="col-prompt" data-i18n="bill.thPrompt">提示词</th>
+          <th class="col-enable" style="width:56px" data-i18n="bill.thEnable">启用</th>
         </tr></thead>
         <tbody id="bill-fields-list"></tbody>
       </table>
@@ -168,49 +181,49 @@
     </div>
     <!-- prompt_header 移到表格下方 -->
     <div class="form-group" style="margin-top:16px;">
-      <label for="prompt-header">全局提示词 / Prompt Header</label>
-      <div class="hint">位于所有字段提示词之前 / Prepended to every field prompt</div>
-      <textarea id="prompt-header" rows="2" placeholder="你是一个账单提取助手 / You are a bill extraction assistant"></textarea>
+      <label for="prompt-header" data-i18n="bill.promptHeaderLabel">全局提示词</label>
+      <div class="hint" data-i18n="bill.promptHeaderHint">位于所有字段提示词之前</div>
+      <textarea id="prompt-header" rows="2" data-i18n-placeholder="bill.promptHeaderPlaceholder" placeholder="你是一个账单提取助手"></textarea>
     </div>
     <div class="bill-save-bar">
-      <button class="btn btn-primary" id="save-profile-btn">保存配置 / Save Profile</button>
+      <button class="btn btn-primary" id="save-profile-btn" data-i18n="bill.saveBtn">保存配置</button>
     </div>
   </div>
 
   <!-- Test card (existing dry-run — migrated verbatim) -->
   <div class="card">
-    <div class="card-title">提示词测试 / Prompt Tester</div>
+    <div class="card-title" data-i18n="tester.title">提示词测试</div>
     <div class="form-group">
-      <label for="test-text">样本 OCR 文本 / Sample OCR Text</label>
-      <textarea id="test-text" placeholder="输入 OCR 文本进行提取测试 / Enter OCR text for extraction test">麦当劳 ¥42 微信支付 2026-08-28</textarea>
+      <label for="test-text" data-i18n="tester.sampleLabel">样本 OCR 文本</label>
+      <textarea id="test-text" data-i18n-placeholder="tester.samplePlaceholder" placeholder="输入 OCR 文本进行提取测试">麦当劳 ¥42 微信支付 2026-08-28</textarea>
     </div>
     <div style="margin-bottom: 12px;">
-      <button class="btn btn-primary" id="test-prompt-btn">测试提取 / Test Prompt</button>
+      <button class="btn btn-primary" id="test-prompt-btn" data-i18n="tester.testBtn">测试提取</button>
     </div>
     <div id="result-panel">
-      <p class="placeholder">测试结果将显示在这里 / Test results will appear here</p>
+      <p class="placeholder" data-i18n="tester.resultPlaceholder">测试结果将显示在这里</p>
     </div>
   </div>
 
   <!-- OCR flow tester — hits the real webhook path -->
   <div class="card" id="ocr-flow-section">
-    <div class="card-title">OCR 流程测试 / OCR Flow Tester</div>
+    <div class="card-title" data-i18n="ocr.title">OCR 流程测试</div>
     <div id="ocr-flow-banner"></div>
     <div class="form-group">
-      <label for="ocr-flow-text">OCR 文本 / OCR Text</label>
-      <div class="hint">模拟 iPhone Shortcut 发送的真实 webhook 请求——走完整链路（写原始信息 → AI 提取 → 写精简数据 → 创建账单）/ Simulates the full webhook path</div>
-      <textarea id="ocr-flow-text" placeholder="粘贴 OCR 识别的账单文本">麦当劳 ¥42 微信支付 2026-08-28</textarea>
+      <label for="ocr-flow-text" data-i18n="ocr.textLabel">OCR 文本</label>
+      <div class="hint" data-i18n="ocr.hint">模拟 iPhone Shortcut 发送的真实 webhook 请求——走完整链路（写原始信息 → AI 提取 → 写精简数据 → 创建账单）</div>
+      <textarea id="ocr-flow-text" data-i18n-placeholder="ocr.textPlaceholder" placeholder="粘贴 OCR 识别的账单文本">麦当劳 ¥42 微信支付 2026-08-28</textarea>
     </div>
     <div class="form-group">
       <label for="ocr-flow-token">Webhook Token</label>
-      <div class="hint">X-Webhook-Token（与 iPhone Shortcut 中配置的一致）/ Same token as configured in iPhone Shortcut</div>
+      <div class="hint" data-i18n="ocr.tokenHint">X-Webhook-Token（与 iPhone Shortcut 中配置的一致）</div>
       <input type="text" id="ocr-flow-token" placeholder="X-Webhook-Token" />
     </div>
     <div style="margin-bottom: 12px;">
-      <button class="btn btn-primary" id="ocr-flow-btn">发送 / Send</button>
+      <button class="btn btn-primary" id="ocr-flow-btn" data-i18n="ocr.sendBtn">发送</button>
     </div>
     <div id="ocr-flow-result">
-      <p class="placeholder">结果将显示在这里 / Results will appear here</p>
+      <p class="placeholder" data-i18n="ocr.resultPlaceholder">结果将显示在这里</p>
     </div>
   </div>
 

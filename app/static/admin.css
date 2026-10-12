@@ -3,6 +3,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 .container { max-width: 960px; margin: 0 auto; }
 h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 4px; }
 .subtitle { font-size: 0.85rem; color: #86868b; margin-bottom: 24px; }
+.header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.lang-toggle { padding: 4px 12px; font-size: 0.8rem; flex-shrink: 0; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 .card-title { font-size: 1rem; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #e8e8ed; }
 .form-group { margin-bottom: 12px; }

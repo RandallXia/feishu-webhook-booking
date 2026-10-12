@@ -18,6 +18,466 @@
   var TOKEN_KEY = 'admin_ai_token';
   var API_BASE = '';
 
+  // ===========================================================================
+  // i18n — zh/EN toggle (single-language rendering, persisted choice)
+  //
+  // Plan B: the page renders ONE language at a time instead of the old
+  // hardcoded「中文 / English」concatenation. Keys are namespaced by section.
+  // applyStaticI18n() runs BEFORE the DOM refs below so static HTML is painted
+  // in the saved language during the IIFE's first synchronous pass — the head
+  // inline script (admin.html <head>) already set html.lang-en before first
+  // paint, so there is no flash of the wrong language.
+  // ===========================================================================
+  var LANG_KEY = 'admin_ai_lang';
+
+  var I18N = {
+    zh: {
+      'app.title': 'AI 配置管理',
+      'app.subtitle': 'AI Config Admin — 配置浏览与编辑',
+      'lang.toggle': 'EN', // button always shows the TARGET language
+      'setup.title': '初始化设置',
+      'setup.descBeforeCode': '首次使用请先在运行环境的 env 文件中设置',
+      'setup.descAfterCode': '，然后在下方输入该令牌。',
+      'setup.descFull': '首次使用请先在运行环境的 env 文件中设置 CONFIG_RELOAD_TOKEN，然后在下方输入该令牌。',
+      'setup.tokenLabel': '管理令牌 (CONFIG_RELOAD_TOKEN)',
+      'setup.tokenPlaceholder': 'CONFIG_RELOAD_TOKEN 的值',
+      'setup.getStartBtn': '开始使用',
+      'token.title': '管理令牌',
+      'token.hint': '令牌仅存于本机浏览器 localStorage，不会发送到页面以外的位置',
+      'token.invalidReenter': '令牌无效或已过期，请重新输入',
+      'history.title': '记账历史',
+      'history.refreshBtn': '刷新',
+      'history.limitLabel': '条数',
+      'history.loading': '加载中...',
+      'history.pendingChip': '⏳ 解析中',
+      'history.pendingText': '正在处理最新请求',
+      'history.disabled': '历史未启用 — 设置 AI_HISTORY_DB_PATH 后启用',
+      'history.empty': '暂无记录',
+      'history.details': '详情',
+      'history.errorLabel': '失败原因: ',
+      'history.noDetails': '无详情',
+      'history.blockSummary': '精简原始数据',
+      'history.blockOcr': '原始 OCR',
+      'history.blockExtracted': '提取字段',
+      'history.blockWarnings': '警告',
+      'history.chipSuccess': '✓ 成功',
+      'history.chipFailed': '✗ 失败',
+      'history.chipDuplicate': '⏭ 重复',
+      'status.loading': '状态加载中...',
+      'status.configInvalid': '配置无效',
+      'status.configOk': '配置有效 · generation ',
+      'status.aiNotEnabled': 'AI 未启用',
+      'status.adminDisabled': '管理端点未启用',
+      'status.loadFailed': '状态加载失败',
+      'overview.title': '配置概览',
+      'overview.loadBtn': '加载配置',
+      'overview.placeholder': '点击"加载配置"查看当前 AI 配置',
+      'overview.loading': '加载中...',
+      'overview.endpointUnavailable': '端点不可用 (404)',
+      'overview.networkError': '网络错误: ',
+      'overview.aiNotEnabled': 'AI 未启用',
+      'overview.aiNotEnabledDesc': '当前 AI_ENABLED=false，AI 功能未激活',
+      'overview.unknownError': '未知错误',
+      'overview.lastReloadError': '最后加载错误:',
+      'overview.statusLabel': 'AI 状态',
+      'overview.enabled': '已启用',
+      'overview.providerLabel': '提供商',
+      'overview.modelLabel': '模型',
+      'overview.timeoutLabel': '超时',
+      'overview.genLabel': '配置版本',
+      'overview.validLabel': '配置有效',
+      'overview.yes': '是',
+      'overview.no': '否',
+      'overview.lastError': '最后错误',
+      'overview.fieldMapping': '字段映射',
+      'overview.thAiKey': 'AI 键',
+      'overview.thFeishuField': '飞书字段',
+      'overview.thType': '类型',
+      'overview.thFallback': '回退',
+      'overview.thPrompt': '提示词',
+      'overview.whitelist': '选项白名单',
+      'overview.fieldsUnit': ' 个字段',
+      'overview.optionsUnit': ' 选项',
+      'tester.title': '提示词测试',
+      'tester.sampleLabel': '样本 OCR 文本',
+      'tester.samplePlaceholder': '输入 OCR 文本进行提取测试',
+      'tester.testBtn': '测试提取',
+      'tester.resultPlaceholder': '测试结果将显示在这里',
+      'tester.testing': '测试中...',
+      'tester.needToken': '请先输入管理令牌',
+      'tester.needText': '请输入测试文本',
+      'tester.statusLabel': '提取状态: ',
+      'tester.warnings': '警告:',
+      'tester.extractedFields': '提取字段:',
+      'tester.billFields': '账单字段:',
+      'tester.summaryWriteback': '摘要回写:',
+      'tester.field': '字段',
+      'tester.value': '值',
+      'tester.showRawJson': '显示原始 JSON',
+      'tester.dirtyConfirm': '有未保存的改动，干跑将使用已保存的配置。继续？',
+      'ocr.title': 'OCR 流程测试',
+      'ocr.textLabel': 'OCR 文本',
+      'ocr.hint': '模拟 iPhone Shortcut 发送的真实 webhook 请求——走完整链路（写原始信息 → AI 提取 → 写精简数据 → 创建账单）',
+      'ocr.textPlaceholder': '粘贴 OCR 识别的账单文本',
+      'ocr.tokenHint': 'X-Webhook-Token（与 iPhone Shortcut 中配置的一致）',
+      'ocr.sendBtn': '发送',
+      'ocr.resultPlaceholder': '结果将显示在这里',
+      'ocr.needText': '请输入 OCR 文本',
+      'ocr.needToken': '请输入 Webhook Token',
+      'ocr.sending': '发送中...',
+      'ocr.flowOk': '流程成功——请到飞书账本查看新纪录',
+      'ocr.flowAiFailed': '原始信息已写入，但 AI 阶段失败',
+      'ocr.requestFailedPrefix': '请求失败: ',
+      'ocr.requestFailed': '请求失败',
+      'aiConn.title': 'AI 连接',
+      'aiConn.providerLabel': '提供商',
+      'aiConn.providerUnset': '— 未设置 —',
+      'aiConn.baseUrlPlaceholder': '留空使用官方',
+      'aiConn.modelLabel': '模型',
+      'aiConn.modelPlaceholder': '如 claude-3-5-sonnet',
+      'aiConn.timeoutLabel': '超时 (秒)',
+      'aiConn.deploymentInfo': '部署信息',
+      'aiConn.saveBtn': '保存 AI 连接',
+      'aiConn.restartHint': '重启后生效',
+      'aiConn.keySetKeep': '已设置——留空保持不变',
+      'aiConn.keySet': '已设置',
+      'aiConn.keyUnset': '未设置',
+      'aiConn.noEnvFile': '无 env 文件——保存将失败（环境变量直设模式）',
+      'aiConn.restartBanner': 'AI 连接已更新，重启服务后生效',
+      'aiConn.saved': '已保存',
+      'aiConn.validationFailed': '校验失败',
+      'extract.title': '提取表配置',
+      'extract.saveBtn': '保存全部账本',
+      'extract.addAliasBtn': '➕ 新增账本',
+      'extract.placeholder': '点击"新增账本"或加载现有账本',
+      'extract.summaryFieldLabel': '摘要字段',
+      'extract.summaryFieldHint': '提取表的「精简原始数据」回写字段',
+      'extract.newAliasTitle': '新账本',
+      'extract.urlLabel': '飞书表 URL',
+      'extract.parseUrlBtn': '解析 URL',
+      'extract.tableLabel': '表',
+      'extract.selectTable': '— 选择表 —',
+      'extract.loadTablesBtn': '加载表列表',
+      'extract.recordLabel': '记录',
+      'extract.recordPlaceholder': '点击下方记录选中',
+      'extract.loadRecordsBtn': '加载记录',
+      'extract.yearLabel': 'year (可空)',
+      'extract.yearPlaceholder': '如 2026，可留空',
+      'extract.enabledLabel': ' enabled',
+      'extract.deleteBtn': '删除',
+      'extract.defaultNotice': '默认账本不可删除',
+      'extract.loading': '加载中...',
+      'extract.needUrl': '请输入 URL',
+      'extract.parsing': '解析中...',
+      'extract.parseFailed': '解析失败',
+      'extract.needAppToken': '请先解析或填写 app_token',
+      'extract.loadFailedOption': '— 加载失败 —',
+      'extract.loadTablesFailed': '加载表列表失败',
+      'extract.pageLimit': '已达翻页上限 (N 页)',
+      'extract.loadMore': '加载更多',
+      'extract.noRecords': '无记录',
+      'extract.loadRecordsFailed': '加载记录失败',
+      'extract.needAppTokenAndTable': '请先填写 app_token 与 table_id',
+      'extract.configInvalidOrLegacy': '配置无效或旧版模式',
+      'extract.legacyMode': '旧版单目标模式不支持 UI 编辑',
+      'extract.noAliases': '无账本，点击"新增账本"',
+      'extract.loadFailed': '加载失败',
+      'extract.saved': '已保存，generation ',
+      'extract.validationFailed': '校验失败，请检查标红字段',
+      'extract.configChangedReloading': '配置已被修改，正在重新加载',
+      'extract.saveFailed': '保存失败',
+      'extract.noExtractTable': '— 未选择提取表 —',
+      'extract.selectField': '— 选择字段 —',
+      'extract.fieldFromExtract': '（提取表）',
+      'extract.loadFieldsFailed': '加载提取表字段失败',
+      'bill.title': '账单表配置',
+      'bill.parseBtn': '解析',
+      'bill.loadTablesBtn': '加载表',
+      'bill.matchedCountInitial': '已匹配 0 字段 · Matched',
+      'bill.deriveLink': '重新推导',
+      'bill.thFeishuField': '飞书字段',
+      'bill.thAiKey': 'AI 键映射',
+      'bill.thType': '类型',
+      'bill.thFallback': '回退',
+      'bill.thPrompt': '提示词',
+      'bill.thEnable': '启用',
+      'bill.promptHeaderLabel': '全局提示词',
+      'bill.promptHeaderHint': '位于所有字段提示词之前',
+      'bill.promptHeaderPlaceholder': '你是一个账单提取助手',
+      'bill.saveBtn': '保存配置',
+      'bill.matchedCount': '已匹配 N/T 字段 · Matched',
+      'bill.skipOption': '跳过',
+      'bill.otherTag': '（其他）',
+      'bill.chipSkip': '○ 跳过',
+      'bill.chipAuto': '✓ 自动匹配',
+      'bill.chipManual': '● 手动',
+      'bill.noneOption': '— 无 —',
+      'bill.naOption': '— 不可用 —',
+      'bill.loadFieldsFailed': '加载字段列表失败',
+      'bill.needTableFirst': '请先选择表并加载字段',
+      'bill.autoDeriveApplied': '已应用自动推导',
+      'bill.needSummaryFirst': '请先在提取表配置区选择摘要字段',
+      'bill.summaryEmptyErrorRow': '摘要字段为空 — 前往提取表配置区选择',
+      'bill.bodyValidationFailed': '请求体校验失败',
+      'config.generationSuffix': ' generation ',
+      'aiExtractedTag': '（账单明细）',
+      'recordIdTag': '（原始信息）',
+      'rawJson': '原始 JSON',
+      'warningEntry': '  ⚠ warning',
+    },
+    en: {
+      'app.title': 'AI Config Admin',
+      'app.subtitle': 'AI Config Admin — Config viewer & editor',
+      'lang.toggle': '中', // button always shows the TARGET language
+      'setup.title': 'Initial Setup',
+      'setup.descBeforeCode': 'Set ',
+      'setup.descAfterCode': ' in your env file first, then enter it below.',
+      'setup.descFull': 'Set CONFIG_RELOAD_TOKEN in your env file first, then enter it below.',
+      'setup.tokenLabel': 'Admin Token (CONFIG_RELOAD_TOKEN)',
+      'setup.tokenPlaceholder': 'Value of CONFIG_RELOAD_TOKEN',
+      'setup.getStartBtn': 'Get Started',
+      'token.hint': 'Stored in browser localStorage only',
+      'token.title': 'Admin Token',
+      'token.invalidReenter': 'Invalid or expired token, please re-enter',
+      'history.title': 'Request History',
+      'history.refreshBtn': 'Refresh',
+      'history.limitLabel': 'Entries',
+      'history.loading': 'Loading...',
+      'history.pendingChip': '⏳ Parsing…',
+      'history.pendingText': 'Waiting for the latest request',
+      'history.disabled': 'History disabled — set AI_HISTORY_DB_PATH to enable',
+      'history.empty': 'No records yet',
+      'history.details': 'Details',
+      'history.errorLabel': 'Error: ',
+      'history.noDetails': 'No details',
+      'history.blockSummary': 'Summary',
+      'history.blockOcr': 'Original OCR',
+      'history.blockExtracted': 'Extracted',
+      'history.blockWarnings': 'Warnings',
+      'history.chipSuccess': '✓ Success',
+      'history.chipFailed': '✗ Failed',
+      'history.chipDuplicate': '⏭ Duplicate',
+      'status.loading': 'Loading status...',
+      'status.configInvalid': 'Config Invalid',
+      'status.configOk': 'Config OK · generation ',
+      'status.aiNotEnabled': 'AI not enabled',
+      'status.adminDisabled': 'Admin endpoints disabled',
+      'status.loadFailed': 'Status load failed',
+      'overview.title': 'Profile Overview',
+      'overview.loadBtn': 'Load Profile',
+      'overview.placeholder': 'Click "Load Profile" to view AI config',
+      'overview.loading': 'Loading...',
+      'overview.endpointUnavailable': 'Endpoint unavailable (404)',
+      'overview.networkError': 'Network error: ',
+      'overview.aiNotEnabled': 'AI Not Enabled',
+      'overview.aiNotEnabledDesc': 'AI_ENABLED=false, AI features are inactive',
+      'overview.unknownError': 'Unknown error',
+      'overview.lastReloadError': 'Last reload error:',
+      'overview.statusLabel': 'Status',
+      'overview.enabled': 'Enabled',
+      'overview.providerLabel': 'Provider',
+      'overview.modelLabel': 'Model',
+      'overview.timeoutLabel': 'Timeout',
+      'overview.genLabel': 'Gen',
+      'overview.validLabel': 'Valid',
+      'overview.yes': 'Yes',
+      'overview.no': 'No',
+      'overview.lastError': 'Error',
+      'overview.fieldMapping': 'Field Mapping',
+      'overview.thAiKey': 'AI Key',
+      'overview.thFeishuField': 'Feishu Field',
+      'overview.thType': 'Type',
+      'overview.thFallback': 'Fallback',
+      'overview.thPrompt': 'Prompt',
+      'overview.whitelist': 'Whitelist',
+      'overview.fieldsUnit': ' fields',
+      'overview.optionsUnit': ' options',
+      'tester.title': 'Prompt Tester',
+      'tester.sampleLabel': 'Sample OCR Text',
+      'tester.samplePlaceholder': 'Enter OCR text for extraction test',
+      'tester.testBtn': 'Test Prompt',
+      'tester.resultPlaceholder': 'Test results will appear here',
+      'tester.testing': 'Testing...',
+      'tester.needToken': 'Please enter admin token first',
+      'tester.needText': 'Please enter test text',
+      'tester.statusLabel': 'Status: ',
+      'tester.warnings': 'Warnings:',
+      'tester.extractedFields': 'Extracted Fields:',
+      'tester.billFields': 'Bill Fields:',
+      'tester.summaryWriteback': 'Summary Writeback:',
+      'tester.field': 'Field',
+      'tester.value': 'Value',
+      'tester.showRawJson': 'Show Raw JSON',
+      'tester.dirtyConfirm': 'You have unsaved edits — the dry-run will use the SAVED config. Continue?',
+      'ocr.title': 'OCR Flow Tester',
+      'ocr.textLabel': 'OCR Text',
+      'ocr.hint': 'Simulates the real webhook request sent by the iPhone Shortcut — full path (write 原始信息 → AI extract → write summary → create bill record)',
+      'ocr.textPlaceholder': 'Paste OCR bill text',
+      'ocr.tokenHint': 'X-Webhook-Token (same token as configured in iPhone Shortcut)',
+      'ocr.sendBtn': 'Send',
+      'ocr.resultPlaceholder': 'Results will appear here',
+      'ocr.needText': 'Please enter OCR text',
+      'ocr.needToken': 'Please enter Webhook Token',
+      'ocr.sending': 'Sending...',
+      'ocr.flowOk': 'Flow succeeded — check Feishu for the new record',
+      'ocr.flowAiFailed': '原始信息 written but AI stage failed',
+      'ocr.flowAiFailed': '原始信息 written but AI stage failed',
+      'ocr.requestFailedPrefix': 'Request failed: ',
+      'ocr.requestFailed': 'Request failed',
+      'aiConn.title': 'AI Connection',
+      'aiConn.providerLabel': 'Provider',
+      'aiConn.providerUnset': '— Unset —',
+      'aiConn.baseUrlPlaceholder': 'Leave empty for official endpoint',
+      'aiConn.modelPlaceholder': 'e.g. gpt-4o',
+      'aiConn.modelLabel': 'Model',
+      'aiConn.timeoutLabel': 'Timeout (s)',
+      'aiConn.deploymentInfo': 'Deployment Info',
+      'aiConn.saveBtn': 'Save',
+      'aiConn.restartHint': 'Restart required',
+      'aiConn.keySetKeep': 'Set — leave empty to keep current',
+      'aiConn.keySet': 'Set',
+      'aiConn.keyUnset': 'Unset',
+      'aiConn.noEnvFile': 'No env file — save will 409',
+      'aiConn.restartBanner': 'AI connection updated — restart to apply',
+      'aiConn.saved': 'Saved',
+      'aiConn.validationFailed': 'Validation failed',
+      'extract.title': 'Extract Table Config',
+      'extract.saveBtn': 'Save All',
+      'extract.addAliasBtn': '➕ Add Alias',
+      'extract.placeholder': 'Click "Add Alias" or load existing aliases',
+      'extract.summaryFieldLabel': 'Summary Field',
+      'extract.summaryFieldHint': 'Extract-table writeback field for 精简原始数据',
+      'extract.newAliasTitle': 'New Alias',
+      'extract.urlLabel': 'Feishu Table URL',
+      'extract.parseUrlBtn': 'Parse URL',
+      'extract.tableLabel': 'Table',
+      'extract.selectTable': '— Select table —',
+      'extract.loadTablesBtn': 'Load Tables',
+      'extract.recordLabel': 'Record',
+      'extract.recordPlaceholder': 'Click a record below',
+      'extract.loadRecordsBtn': 'Load Records',
+      'extract.yearLabel': 'year (optional)',
+      'extract.yearPlaceholder': 'e.g. 2026, optional',
+      'extract.enabledLabel': ' enabled',
+      'extract.deleteBtn': 'Delete',
+      'extract.defaultNotice': 'Default alias cannot be deleted',
+      'extract.loading': 'Loading...',
+      'extract.needUrl': 'Please enter a URL',
+      'extract.parsing': 'Parsing...',
+      'extract.parseFailed': 'Parse failed',
+      'extract.needAppToken': 'Parse or enter app_token first',
+      'extract.loadFailedOption': '— Load failed —',
+      'extract.loadTablesFailed': 'Failed to load tables',
+      'extract.pageLimit': 'Page limit reached (N pages)',
+      'extract.loadMore': 'Load More',
+      'extract.noRecords': 'No records',
+      'extract.loadRecordsFailed': 'Failed to load records',
+      'extract.needAppTokenAndTable': 'Enter app_token + table_id first',
+      'extract.configInvalidOrLegacy': 'Config invalid or legacy mode',
+      'extract.legacyMode': 'Legacy mode — UI editing unavailable',
+      'extract.noAliases': 'No aliases — click "Add Alias"',
+      'extract.loadFailed': 'Load failed',
+      'extract.saved': 'Saved, generation ',
+      'extract.validationFailed': 'Validation failed — check highlighted fields',
+      'extract.configChangedReloading': 'Config changed — reloading',
+      'extract.saveFailed': 'Save failed',
+      'extract.noExtractTable': '— No extract table —',
+      'extract.selectField': '— Select field —',
+      'extract.fieldFromExtract': ' (extract table)',
+      'extract.fieldFromExtract': ' (extract table)',
+      'extract.loadFieldsFailed': 'Load extract fields failed',
+      'bill.title': 'Bill Table Config',
+      'bill.parseBtn': 'Parse',
+      'bill.loadTablesBtn': 'Load',
+      'bill.matchedCountInitial': '0 fields matched · Matched',
+      'bill.deriveLink': 'Re-derive',
+      'bill.thFeishuField': 'Feishu Field',
+      'bill.thAiKey': 'AI Key Mapping',
+      'bill.thType': 'Type',
+      'bill.thFallback': 'Fallback',
+      'bill.thPrompt': 'Prompt',
+      'bill.thEnable': 'On',
+      'bill.promptHeaderLabel': 'Prompt Header',
+      'bill.promptHeaderHint': 'Prepended to every field prompt',
+      'bill.promptHeaderPlaceholder': 'You are a bill extraction assistant',
+      'bill.saveBtn': 'Save Profile',
+      'bill.matchedCount': 'N/T fields matched · Matched',
+      'bill.skipOption': 'Skip',
+      'bill.otherTag': ' (other)',
+      'bill.chipSkip': '○ Skip',
+      'bill.chipAuto': '✓ Auto',
+      'bill.chipManual': '● Manual',
+      'bill.noneOption': '— None —',
+      'bill.naOption': '— N/A —',
+      'bill.loadFieldsFailed': 'Failed to load fields',
+      'bill.needTableFirst': 'Select a table and load fields first',
+      'bill.autoDeriveApplied': 'Auto-derive applied',
+      'bill.needSummaryFirst': 'Select a summary field in the extract-section first',
+      'bill.summaryEmptyErrorRow': 'Summary field empty — set it in the extract section',
+      'bill.bodyValidationFailed': 'Body validation failed',
+      'config.generationSuffix': ' generation ',
+      'aiExtractedTag': ' (bill record)',
+      'recordIdTag': ' (原始信息)',
+      'rawJson': 'Raw JSON',
+      'warningEntry': '  ⚠ warning',
+    },
+  };
+
+  var currentLang = null;
+  try {
+    currentLang = localStorage.getItem(LANG_KEY) || 'zh';
+  } catch (e) { currentLang = 'zh'; }
+  if (currentLang !== 'en') currentLang = 'zh'; // whitelist defense
+
+  // Translation lookup with a zh fallback chain; unknown keys return the key
+  // itself so a missing entry is visible instead of silently blank.
+  function t(key) {
+    var d = I18N[currentLang] || I18N.zh;
+    var v = d[key];
+    if (v == null) v = (I18N.zh[key] != null) ? I18N.zh[key] : key;
+    return v;
+  }
+
+  // Paint every static node carrying data-i18n / data-i18n-placeholder, the
+  // <title>, <html lang>, and the toggle button label (target language).
+  function applyStaticI18n() {
+    document.documentElement.lang = currentLang === 'en' ? 'en' : 'zh-CN';
+    document.title = t('app.title');
+    var nodes = document.querySelectorAll('[data-i18n]');
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'));
+    }
+    var phs = document.querySelectorAll('[data-i18n-placeholder]');
+    for (var j = 0; j < phs.length; j++) {
+      phs[j].setAttribute('placeholder', t(phs[j].getAttribute('data-i18n-placeholder')));
+    }
+    var langBtn = document.getElementById('lang-toggle-btn');
+    if (langBtn) langBtn.textContent = t('lang.toggle');
+  }
+
+  // Language toggle: persist the choice, re-paint static text, then re-render
+  // the two STATELESS read-only areas (history list + status bar). Stateful
+  // forms (AI connection / extract / bill) keep their values — only labels
+  // around them change, which applyStaticI18n covers. Banners are transient
+  // messages and are NOT replayed (next user action refreshes them). We do NOT
+  // location.reload() — that would drop unsaved form edits (markDirty exists
+  // precisely to warn about that).
+  var langToggleBtn = document.getElementById('lang-toggle-btn');
+  if (langToggleBtn) langToggleBtn.addEventListener('click', function() {
+    currentLang = (currentLang === 'zh') ? 'en' : 'zh';
+    try { localStorage.setItem(LANG_KEY, currentLang); } catch (e) {}
+    applyStaticI18n();
+    // Stateful sections only render their data AFTER a successful api() call,
+    // which requires a token; in setup mode (no token) these are hidden, so
+    // the guarded calls below are no-ops there.
+    if (getToken()) {
+      loadHistory();
+      refreshStatus();
+    }
+  });
+
+  applyStaticI18n();
+
   // --- DOM refs (existing — zero regression) ---
   var tokenInput = document.getElementById('token-input');
   var loadProfileBtn = document.getElementById('load-profile-btn');
@@ -60,11 +520,11 @@
           for (var s = 0; s < sections.length; s++) sections[s].style.display = 'none';
           if (setupHint) {
             while (setupHint.firstChild) setupHint.removeChild(setupHint.firstChild);
-            setupHint.appendChild(document.createTextNode('令牌不正确，请重新输入 / Invalid token, please re-enter'));
+            setupHint.appendChild(document.createTextNode(t('token.invalidReenter')));
             setupHint.style.display = 'block';
           }
         } else {
-          alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
+          alert(t('token.invalidReenter'));
           if (tokenInput) tokenInput.focus();
         }
         return response.text().then(function() {
@@ -134,7 +594,7 @@
       var registry = data.registry || {};
       var configValid = registry.config_valid !== false;
       if (!configValid) {
-        var msg = '配置无效 / Config Invalid';
+        var msg = t('status.configInvalid');
         if (registry.last_reload_error) {
           msg += ' — ' + registry.last_reload_error;
         }
@@ -142,18 +602,18 @@
         return;
       }
       var gen = registry.generation != null ? registry.generation : '-';
-      showBanner(statusBar, 'ok', '配置有效 / Config OK · generation ' + gen);
+      showBanner(statusBar, 'ok', t('status.configOk') + gen);
     }).catch(function(err) {
       if (err && err.status === 404) {
         var body = err.body;
         if (body && body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
-          showBanner(statusBar, 'info', 'AI 未启用 / AI not enabled');
+          showBanner(statusBar, 'info', t('status.aiNotEnabled'));
           return;
         }
-        showBanner(statusBar, 'warn', '管理端点未启用 / Admin endpoints disabled');
+        showBanner(statusBar, 'warn', t('status.adminDisabled'));
         return;
       }
-      showBanner(statusBar, 'warn', '状态加载失败 / Status load failed');
+      showBanner(statusBar, 'warn', t('status.loadFailed'));
     });
   }
 
@@ -175,13 +635,13 @@
   }
 
   function authHeaders() {
-    var t = getToken();
-    return t ? { 'X-Admin-Token': t } : {};
+    var token = getToken();
+    return token ? { 'X-Admin-Token': token } : {};
   }
 
   function handle401(response) {
     if (response.status === 401) {
-      alert('令牌无效或已过期，请重新输入 / Invalid or expired token, please re-enter');
+      alert(t('token.invalidReenter'));
       tokenInput.focus();
       return true;
     }
@@ -190,7 +650,7 @@
 
   function renderProfile(data) {
     if (data.error && data.error.code === 'AI_DISABLED') {
-      profilePanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>AI 未启用 / AI Not Enabled</p><p style="font-size:0.8rem;margin-top:4px;">当前 AI_ENABLED=false，AI 功能未激活<br/>AI_ENABLED=false, AI features are inactive</p></div>';
+      profilePanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>' + escapeHtml(t('overview.aiNotEnabled')) + '</p><p style="font-size:0.8rem;margin-top:4px;">' + escapeHtml(t('overview.aiNotEnabledDesc')) + '</p></div>';
       return;
     }
 
@@ -198,29 +658,29 @@
     var configValid = registry.config_valid !== false;
 
     if (!configValid) {
-      var errMsg = registry.last_reload_error || '未知错误 / Unknown error';
+      var errMsg = registry.last_reload_error || t('overview.unknownError');
       profilePanel.innerHTML =
-        '<div class="status-tag status-err">配置无效 / Config Invalid</div>' +
+        '<div class="status-tag status-err">' + escapeHtml(t('status.configInvalid')) + '</div>' +
         '<div class="error-box">' +
-          '<strong>最后加载错误 / Last reload error:</strong><br/>' +
+          '<strong>' + escapeHtml(t('overview.lastReloadError')) + '</strong><br/>' +
           '<span style="font-family:monospace;font-size:0.8rem;">' + escapeHtml(errMsg) + '</span>' +
         '</div>';
       return;
     }
 
     var html = '<div class="key-value">';
-    html += '<dt>AI 状态 / Status</dt><dd><span class="status-tag status-ok">已启用 / Enabled</span></dd>';
-    html += '<dt>提供商 / Provider</dt><dd>' + escapeHtml(data.provider || '-') + '</dd>';
-    html += '<dt>模型 / Model</dt><dd>' + escapeHtml(data.model || '-') + '</dd>';
-    html += '<dt>超时 / Timeout</dt><dd>' + escapeHtml(String(data.timeout_seconds ?? '-')) + 's</dd>';
+    html += '<dt>' + escapeHtml(t('overview.statusLabel')) + '</dt><dd><span class="status-tag status-ok">' + escapeHtml(t('overview.enabled')) + '</span></dd>';
+    html += '<dt>' + escapeHtml(t('overview.providerLabel')) + '</dt><dd>' + escapeHtml(data.provider || '-') + '</dd>';
+    html += '<dt>' + escapeHtml(t('overview.modelLabel')) + '</dt><dd>' + escapeHtml(data.model || '-') + '</dd>';
+    html += '<dt>' + escapeHtml(t('overview.timeoutLabel')) + '</dt><dd>' + escapeHtml(String(data.timeout_seconds ?? '-')) + 's</dd>';
     html += '</div>';
 
     if (registry.generation !== undefined) {
       html += '<div class="key-value" style="margin-top:8px;">';
-      html += '<dt>配置版本 / Gen</dt><dd>' + escapeHtml(String(registry.generation)) + '</dd>';
-      html += '<dt>配置有效 / Valid</dt><dd><span class="status-tag ' + (configValid ? 'status-ok' : 'status-err') + '">' + (configValid ? '是 / Yes' : '否 / No') + '</span></dd>';
+      html += '<dt>' + escapeHtml(t('overview.genLabel')) + '</dt><dd>' + escapeHtml(String(registry.generation)) + '</dd>';
+      html += '<dt>' + escapeHtml(t('overview.validLabel')) + '</dt><dd><span class="status-tag ' + (configValid ? 'status-ok' : 'status-err') + '">' + escapeHtml(configValid ? t('overview.yes') : t('overview.no')) + '</span></dd>';
       if (registry.last_reload_error) {
-        html += '<dt>最后错误 / Error</dt><dd><span class="status-tag status-err">' + escapeHtml(registry.last_reload_error) + '</span></dd>';
+        html += '<dt>' + escapeHtml(t('overview.lastError')) + '</dt><dd><span class="status-tag status-err">' + escapeHtml(registry.last_reload_error) + '</span></dd>';
       }
       html += '</div>';
     }
@@ -228,8 +688,8 @@
     var profile = data.profile;
     if (profile && profile.fields && profile.fields.length > 0) {
       html += '<div style="margin-top:12px;">';
-      html += '<div style="font-size:0.85rem;font-weight:500;margin-bottom:6px;">字段映射 / Field Mapping</div>';
-      html += '<table><thead><tr><th>AI 键 / AI Key</th><th>飞书字段 / Feishu Field</th><th>类型 / Type</th><th>回退 / Fallback</th><th>提示词 / Prompt</th></tr></thead><tbody>';
+      html += '<div style="font-size:0.85rem;font-weight:500;margin-bottom:6px;">' + escapeHtml(t('overview.fieldMapping')) + '</div>';
+      html += '<table><thead><tr><th>' + escapeHtml(t('overview.thAiKey')) + '</th><th>' + escapeHtml(t('overview.thFeishuField')) + '</th><th>' + escapeHtml(t('overview.thType')) + '</th><th>' + escapeHtml(t('overview.thFallback')) + '</th><th>' + escapeHtml(t('overview.thPrompt')) + '</th></tr></thead><tbody>';
       for (var i = 0; i < profile.fields.length; i++) {
         var f = profile.fields[i];
         html += '<tr>';
@@ -247,10 +707,10 @@
     if (whitelists) {
       var keys = Object.keys(whitelists);
       html += '<div class="key-value" style="margin-top:8px;">';
-      html += '<dt>选项白名单 / Whitelist</dt><dd>' + escapeHtml(String(keys.length)) + ' 个字段 / fields';
+      html += '<dt>' + escapeHtml(t('overview.whitelist')) + '</dt><dd>' + escapeHtml(String(keys.length)) + escapeHtml(t('overview.fieldsUnit'));
       if (keys.length > 0) {
         html += '<div style="font-size:0.75rem;color:#86868b;margin-top:2px;">' +
-          keys.map(function(k) { return k + ' (' + whitelists[k].length + ' 选项/options)'; }).join(', ') +
+          keys.map(function(k) { return k + ' (' + whitelists[k].length + t('overview.optionsUnit') + ')'; }).join(', ') +
         '</div>';
       }
       html += '</dd></div>';
@@ -261,7 +721,7 @@
 
   function renderTestResult(data) {
     if (data.error && data.error.code === 'AI_DISABLED') {
-      resultPanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>AI 未启用，无法测试 / AI Not Enabled, cannot test</p></div>';
+      resultPanel.innerHTML = '<div class="disabled-notice"><div class="icon">⚙️</div><p>' + escapeHtml(t('overview.aiNotEnabled')) + ', cannot test</p></div>';
       return;
     }
 
@@ -270,17 +730,17 @@
     var status = data.ai_status || 'unknown';
     var statusClass = status === 'succeeded' ? 'status-ok' : (status === 'failed' ? 'status-err' : 'status-warn');
     html += '<div style="margin-bottom:8px;">';
-    html += '<strong>提取状态 / Status:</strong> <span class="status-tag ' + statusClass + '">' + escapeHtml(status) + '</span>';
+    html += '<strong>' + escapeHtml(t('tester.statusLabel')) + '</strong> <span class="status-tag ' + statusClass + '">' + escapeHtml(status) + '</span>';
     html += '</div>';
 
     if (status === 'failed') {
-      html += '<div class="error-box">' + escapeHtml(data.error || 'Unknown error') + '</div>';
+      html += '<div class="error-box">' + escapeHtml(data.error || t('overview.unknownError')) + '</div>';
       resultPanel.innerHTML = html;
       return;
     }
 
     if (data.warnings && data.warnings.length > 0) {
-      html += '<div class="warning-box"><strong>警告 / Warnings:</strong>';
+      html += '<div class="warning-box"><strong>' + escapeHtml(t('tester.warnings')) + '</strong>';
       for (var i = 0; i < data.warnings.length; i++) {
         html += '<div class="warning-item">⚠ ' + escapeHtml(data.warnings[i]) + '</div>';
       }
@@ -288,7 +748,7 @@
     }
 
     if (data.extracted) {
-      html += '<div style="margin-top:8px;"><strong>提取字段 / Extracted Fields:</strong></div>';
+      html += '<div style="margin-top:8px;"><strong>' + escapeHtml(t('tester.extractedFields')) + '</strong></div>';
       html += '<div class="key-value" style="margin-top:4px;">';
       var extractedKeys = Object.keys(data.extracted);
       for (var j = 0; j < extractedKeys.length; j++) {
@@ -299,7 +759,7 @@
     }
 
     if (data.bill_fields && Object.keys(data.bill_fields).length > 0) {
-      html += '<div style="margin-top:8px;"><strong>账单字段 / Bill Fields:</strong></div>';
+      html += '<div style="margin-top:8px;"><strong>' + escapeHtml(t('tester.billFields')) + '</strong></div>';
       html += '<div class="key-value" style="margin-top:4px;">';
       var billKeys = Object.keys(data.bill_fields);
       for (var k = 0; k < billKeys.length; k++) {
@@ -310,15 +770,15 @@
     }
 
     if (data.summary_writeback) {
-      html += '<div style="margin-top:8px;"><strong>摘要回写 / Summary Writeback:</strong></div>';
+      html += '<div style="margin-top:8px;"><strong>' + escapeHtml(t('tester.summaryWriteback')) + '</strong></div>';
       html += '<div class="key-value" style="margin-top:4px;">';
-      html += '<dt>字段 / Field</dt><dd>' + escapeHtml(data.summary_writeback.field || '-') + '</dd>';
-      html += '<dt>值 / Value</dt><dd>' + escapeHtml(data.summary_writeback.value != null ? String(data.summary_writeback.value) : '-') + '</dd>';
+      html += '<dt>' + escapeHtml(t('tester.field')) + '</dt><dd>' + escapeHtml(data.summary_writeback.field || '-') + '</dd>';
+      html += '<dt>' + escapeHtml(t('tester.value')) + '</dt><dd>' + escapeHtml(data.summary_writeback.value != null ? String(data.summary_writeback.value) : '-') + '</dd>';
       html += '</div>';
     }
 
     html += '<div style="margin-top:8px;">';
-    html += '<button class="btn btn-secondary" id="toggle-raw-btn" style="font-size:0.75rem;padding:4px 10px;">显示原始 JSON / Show Raw JSON</button>';
+    html += '<button class="btn btn-secondary" id="toggle-raw-btn" style="font-size:0.75rem;padding:4px 10px;">' + escapeHtml(t('tester.showRawJson')) + '</button>';
     html += '</div>';
     html += '<div id="raw-json" style="display:none;margin-top:6px;"><pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre></div>';
 
@@ -341,13 +801,13 @@
   if (loadProfileBtn) loadProfileBtn.addEventListener('click', async function() {
     var token = getToken();
     if (!token) {
-      alert('请先输入管理令牌 / Please enter admin token first');
+      alert(t('tester.needToken'));
       tokenInput.focus();
       return;
     }
 
     saveToken();
-    profilePanel.innerHTML = '<p class="placeholder">加载中 / Loading...</p>';
+    profilePanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('overview.loading')) + '</p>';
 
     try {
       var response = await fetch(API_BASE + '/admin/ai/profile', {
@@ -360,7 +820,7 @@
           renderProfile({ error: { code: 'AI_DISABLED' } });
           return;
         }
-        profilePanel.innerHTML = '<p class="placeholder">端点不可用 / Endpoint unavailable (404)</p>';
+        profilePanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('overview.endpointUnavailable')) + '</p>';
         return;
       }
       if (!response.ok) {
@@ -370,7 +830,7 @@
       var data = await response.json();
       renderProfile(data);
     } catch (err) {
-      profilePanel.innerHTML = '<div class="error-box">网络错误 / Network error: ' + escapeHtml(err.message) + '</div>';
+      profilePanel.innerHTML = '<div class="error-box">' + escapeHtml(t('overview.networkError')) + escapeHtml(err.message) + '</div>';
     }
   });
 
@@ -378,20 +838,20 @@
   if (testPromptBtn) testPromptBtn.addEventListener('click', async function() {
     var token = getToken();
     if (!token) {
-      alert('请先输入管理令牌 / Please enter admin token first');
+      alert(t('tester.needToken'));
       tokenInput.focus();
       return;
     }
 
     var text = testText.value.trim();
     if (!text) {
-      alert('请输入测试文本 / Please enter test text');
+      alert(t('tester.needText'));
       testText.focus();
       return;
     }
 
     saveToken();
-    resultPanel.innerHTML = '<p class="placeholder">测试中 / Testing...</p>';
+    resultPanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('tester.testing')) + '</p>';
 
     try {
       var response = await fetch(API_BASE + '/admin/ai/test', {
@@ -406,13 +866,13 @@
           renderTestResult({ error: { code: 'AI_DISABLED' } });
           return;
         }
-        resultPanel.innerHTML = '<p class="placeholder">端点不可用 / Endpoint unavailable (404)</p>';
+        resultPanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('overview.endpointUnavailable')) + '</p>';
         return;
       }
       var data = await response.json();
       renderTestResult(data);
     } catch (err) {
-      resultPanel.innerHTML = '<div class="error-box">网络错误 / Network error: ' + escapeHtml(err.message) + '</div>';
+      resultPanel.innerHTML = '<div class="error-box">' + escapeHtml(t('overview.networkError')) + escapeHtml(err.message) + '</div>';
     }
   });
 
@@ -452,7 +912,7 @@
     var fields = [];
     if (body.success !== undefined) fields.push(['success', String(body.success)]);
     if (body.request_id) fields.push(['request_id', body.request_id]);
-    if (body.record_id) fields.push(['record_id (原始信息)', body.record_id]);
+    if (body.record_id) fields.push(['record_id' + t('recordIdTag'), body.record_id]);
     if (body.book_alias) fields.push(['book_alias', body.book_alias]);
     if (body.ai_status) {
       var statusLabel = body.ai_status;
@@ -461,7 +921,7 @@
       else if (body.ai_status === 'duplicate') statusLabel = '⏭ ' + body.ai_status;
       fields.push(['ai_status', statusLabel]);
     }
-    if (body.ai_record_id) fields.push(['ai_record_id (账单明细)', body.ai_record_id]);
+    if (body.ai_record_id) fields.push(['ai_record_id' + t('aiExtractedTag'), body.ai_record_id]);
     if (body.ai_extracted && typeof body.ai_extracted === 'object') {
       for (var k in body.ai_extracted) {
         if (Object.prototype.hasOwnProperty.call(body.ai_extracted, k)) {
@@ -471,7 +931,7 @@
     }
     if (body.ai_warnings && body.ai_warnings.length) {
       for (var w = 0; w < body.ai_warnings.length; w++) {
-        fields.push(['  ⚠ warning', body.ai_warnings[w]]);
+        fields.push([t('warningEntry'), body.ai_warnings[w]]);
       }
     }
 
@@ -484,7 +944,7 @@
 
     // Raw JSON toggle
     var details = el('details', { className: 'ocr-flow-json' });
-    details.appendChild(el('summary', null, '原始 JSON / Raw JSON'));
+    details.appendChild(el('summary', null, t('rawJson')));
     var pre = el('pre');
     pre.appendChild(document.createTextNode(JSON.stringify(body, null, 2)));
     details.appendChild(pre);
@@ -495,8 +955,8 @@
     if (!ocrFlowResult || !ocrFlowText) return;
     var text = ocrFlowText.value.trim();
     var token = ocrFlowToken ? ocrFlowToken.value.trim() : '';
-    if (!text) { showBanner(ocrFlowBanner, 'err', '请输入 OCR 文本 / Please enter OCR text'); return; }
-    if (!token) { showBanner(ocrFlowBanner, 'err', '请输入 Webhook Token / Please enter Webhook Token'); return; }
+    if (!text) { showBanner(ocrFlowBanner, 'err', t('ocr.needText')); return; }
+    if (!token) { showBanner(ocrFlowBanner, 'err', t('ocr.needToken')); return; }
 
     ocrFlowBtn.disabled = true;
     // Clear previous result
@@ -518,17 +978,17 @@
     .then(function(result) {
       renderOcrFlowResult(result.status, result.body);
       if (result.status === 200 && result.body.ai_status === 'succeeded') {
-        showBanner(ocrFlowBanner, 'ok', '流程成功——请到飞书账本查看新纪录 / Flow succeeded — check Feishu for the new record');
+        showBanner(ocrFlowBanner, 'ok', t('ocr.flowOk'));
       } else if (result.status === 200 && result.body.ai_status === 'failed') {
-        showBanner(ocrFlowBanner, 'warn', '原始信息已写入，但 AI 阶段失败 / 原始信息 written but AI stage failed');
+        showBanner(ocrFlowBanner, 'warn', t('ocr.flowAiFailed'));
       } else if (result.status !== 200) {
-        showBanner(ocrFlowBanner, 'err', 'HTTP ' + result.status + ' — ' + (result.body && result.body.detail && result.body.detail.error ? result.body.detail.error.message : 'Request failed'));
+        showBanner(ocrFlowBanner, 'err', 'HTTP ' + result.status + ' — ' + (result.body && result.body.detail && result.body.detail.error ? result.body.detail.error.message : t('ocr.requestFailed')));
       }
     })
     .catch(function(err) {
       while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
-      ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '请求失败: ' + (err.message || err)));
-      showBanner(ocrFlowBanner, 'err', '请求失败 / Request failed');
+      ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, t('ocr.requestFailedPrefix') + (err.message || err)));
+      showBanner(ocrFlowBanner, 'err', t('ocr.requestFailed'));
       loadHistory();
     })
     .then(function() {
@@ -560,8 +1020,8 @@
     while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
     var row = el('div', { className: 'history-entry history-entry-pending' });
     var meta = el('div', { className: 'history-meta' });
-    meta.appendChild(el('span', { className: 'status-tag status-info' }, '⏳ 解析中 / Parsing…'));
-    meta.appendChild(el('span', null, '正在处理最新请求 / Waiting for the latest request'));
+    meta.appendChild(el('span', { className: 'status-tag status-info' }, t('history.pendingChip')));
+    meta.appendChild(el('span', null, t('history.pendingText')));
     row.appendChild(meta);
     historyList.appendChild(row);
   }
@@ -584,8 +1044,7 @@
           ? err.body.detail.error.code : null;
         if (err.status === 404 && (code === 'AI_DISABLED' || code === 'HISTORY_DISABLED')) {
           while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
-          historyList.appendChild(el('p', { className: 'placeholder' },
-            '历史未启用 / History disabled — set AI_HISTORY_DB_PATH to enable'));
+          historyList.appendChild(el('p', { className: 'placeholder' }, t('history.disabled')));
           return;
         }
         showError(historyList, err.message);
@@ -597,7 +1056,7 @@
     while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
 
     if (!items || !items.length) {
-      historyList.appendChild(el('p', { className: 'placeholder' }, '暂无记录 / No records yet'));
+      historyList.appendChild(el('p', { className: 'placeholder' }, t('history.empty')));
       return;
     }
 
@@ -614,9 +1073,9 @@
     // Meta row — status chip reuses the global .status-tag palette.
     var chipClass = 'status-info';
     var chipText = item.ai_status || '';
-    if (item.ai_status === 'succeeded') { chipClass = 'status-ok'; chipText = '✓ 成功'; }
-    else if (item.ai_status === 'failed') { chipClass = 'status-err'; chipText = '✗ 失败'; }
-    else if (item.ai_status === 'duplicate') { chipClass = 'status-warn'; chipText = '⏭ 重复'; }
+    if (item.ai_status === 'succeeded') { chipClass = 'status-ok'; chipText = t('history.chipSuccess'); }
+    else if (item.ai_status === 'failed') { chipClass = 'status-err'; chipText = t('history.chipFailed'); }
+    else if (item.ai_status === 'duplicate') { chipClass = 'status-warn'; chipText = t('history.chipDuplicate'); }
 
     var meta = el('div', { className: 'history-meta' });
     meta.appendChild(el('span', { className: 'status-tag ' + chipClass }, chipText));
@@ -633,12 +1092,12 @@
     // Expandable details — each block only when its data exists; a record with
     // nothing to show gets an explicit "no details" placeholder.
     var details = el('details', { className: 'history-details' });
-    details.appendChild(el('summary', null, '详情 / Details'));
+    details.appendChild(el('summary', null, t('history.details')));
     var hasDetails = false;
 
     if (item.error) {
       hasDetails = true;
-      details.appendChild(el('div', { className: 'history-error' }, '失败原因: ' + item.error));
+      details.appendChild(el('div', { className: 'history-error' }, t('history.errorLabel') + item.error));
     }
 
     var extractedHasKeys = false;
@@ -649,12 +1108,12 @@
     }
     var warningsNonEmpty = !!(item.warnings && item.warnings.length);
 
-    hasDetails = appendHistoryBlock(details, hasDetails, '精简原始数据 / Summary', item.summary, null);
-    hasDetails = appendHistoryBlock(details, hasDetails, '原始 OCR / Original OCR', item.original_text, null);
+    hasDetails = appendHistoryBlock(details, hasDetails, t('history.blockSummary'), item.summary, null);
+    hasDetails = appendHistoryBlock(details, hasDetails, t('history.blockOcr'), item.original_text, null);
 
     if (extractedHasKeys) {
       hasDetails = true;
-      appendHistoryBlockTitle(details, '提取字段 / Extracted');
+      appendHistoryBlockTitle(details, t('history.blockExtracted'));
       for (var ek in item.extracted) {
         if (!Object.prototype.hasOwnProperty.call(item.extracted, ek)) continue;
         details.appendChild(el('div', { className: 'history-text' }, '  ↳ ' + ek + ': ' + item.extracted[ek]));
@@ -663,14 +1122,14 @@
 
     if (warningsNonEmpty) {
       hasDetails = true;
-      appendHistoryBlockTitle(details, '警告 / Warnings');
+      appendHistoryBlockTitle(details, t('history.blockWarnings'));
       for (var wi = 0; wi < item.warnings.length; wi++) {
         details.appendChild(el('div', { className: 'history-text' }, '⚠ ' + item.warnings[wi]));
       }
     }
 
     if (!hasDetails) {
-      details.appendChild(el('p', { className: 'placeholder' }, '无详情 / No details'));
+      details.appendChild(el('p', { className: 'placeholder' }, t('history.noDetails')));
     }
     entry.appendChild(details);
     return entry;
@@ -745,12 +1204,12 @@
   function parseUrl(urlInput, cardEl) {
     var url = urlInput.value.trim();
     if (!url) {
-      showError(cardEl.querySelector('.parse-status'), '请输入 URL / Please enter a URL');
+      showError(cardEl.querySelector('.parse-status'), t('extract.needUrl'));
       return;
     }
     var status = cardEl.querySelector('.parse-status');
     while (status.firstChild) status.removeChild(status.firstChild);
-    status.appendChild(el('span', { className: 'placeholder' }, '解析中 / Parsing...'));
+    status.appendChild(el('span', { className: 'placeholder' }, t('extract.parsing')));
 
     api('/admin/feishu/parse-url', {
       method: 'POST',
@@ -766,7 +1225,7 @@
       if (sel) selectTableOption(sel, parsed.table_id);
     }).catch(function(err) {
       while (status.firstChild) status.removeChild(status.firstChild);
-      var msg = '解析失败 / Parse failed';
+      var msg = t('extract.parseFailed');
       if (err && err.status === 422 && err.body && err.body.detail && err.body.detail.error) {
         msg = err.body.detail.error.message || msg;
       } else if (err && err.message) {
@@ -790,28 +1249,28 @@
   function loadTables(btn, cardEl) {
     var appToken = cardEl.querySelector('.app-token-input').value.trim();
     if (!appToken) {
-      showError(cardEl.querySelector('.table-status'), '请先解析或填写 app_token / Parse or enter app_token first');
+      showError(cardEl.querySelector('.table-status'), t('extract.needAppToken'));
       return;
     }
     btn.disabled = true;
     var sel = cardEl.querySelector('.table-select');
     while (sel.firstChild) sel.removeChild(sel.firstChild);
-    sel.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    sel.appendChild(el('option', { value: '' }, t('extract.loading')));
 
     api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
       while (sel.firstChild) sel.removeChild(sel.firstChild);
-      sel.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
+      sel.appendChild(el('option', { value: '' }, t('extract.selectTable')));
       var tables = data.tables || [];
       for (var i = 0; i < tables.length; i++) {
-        var t = tables[i];
-        sel.appendChild(el('option', { value: t.table_id }, t.name || t.table_id));
+        var tbl = tables[i];
+        sel.appendChild(el('option', { value: tbl.table_id }, tbl.name || tbl.table_id));
       }
       var currentTbl = cardEl.querySelector('.table-id-input').value.trim();
       if (currentTbl) selectTableOption(sel, currentTbl);
     }).catch(function(err) {
       while (sel.firstChild) sel.removeChild(sel.firstChild);
-      sel.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
-      showError(cardEl.querySelector('.table-status'), err.message || '加载表列表失败');
+      sel.appendChild(el('option', { value: '' }, t('extract.loadFailedOption')));
+      showError(cardEl.querySelector('.table-status'), err.message || t('extract.loadTablesFailed'));
     }).then(function() {
       btn.disabled = false;
     });
@@ -831,7 +1290,7 @@
     var qs = 'app_token=' + encodeURIComponent(appToken) + '&table_id=' + encodeURIComponent(tableId);
     if (pageToken) qs += '&page_token=' + encodeURIComponent(pageToken);
 
-    var loading = el('p', { className: 'placeholder' }, '加载中 / Loading...');
+    var loading = el('p', { className: 'placeholder' }, t('extract.loading'));
     recordContainer.appendChild(loading);
 
     api('/admin/feishu/records?' + qs).then(function(data) {
@@ -859,11 +1318,11 @@
         pageState.page += 1;
         if (pageState.page >= RECORD_PICKER_MAX_PAGES) {
           recordContainer.appendChild(el('p', { className: 'placeholder' },
-            '已达翻页上限 (' + RECORD_PICKER_MAX_PAGES + ' 页) / Page limit reached'));
+            t('extract.pageLimit').replace('N', String(RECORD_PICKER_MAX_PAGES))));
           return;
         }
         pageState.nextPageToken = data.next_page_token;
-        var moreBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载更多 / Load More');
+        var moreBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.loadMore'));
         moreBtn.style.marginTop = '6px';
         moreBtn.addEventListener('click', function() {
           recordContainer.removeChild(moreBtn);
@@ -871,11 +1330,11 @@
         });
         recordContainer.appendChild(moreBtn);
       } else if (items.length === 0 && pageState.page === 0) {
-        recordContainer.appendChild(el('p', { className: 'placeholder' }, '无记录 / No records'));
+        recordContainer.appendChild(el('p', { className: 'placeholder' }, t('extract.noRecords')));
       }
     }).catch(function(err) {
       recordContainer.removeChild(loading);
-      recordContainer.appendChild(el('p', { className: 'status-tag status-err' }, err.message || '加载记录失败'));
+      recordContainer.appendChild(el('p', { className: 'status-tag status-err' }, err.message || t('extract.loadRecordsFailed')));
     });
   }
 
@@ -886,16 +1345,16 @@
     target = target || {};
     var card = el('div', { className: 'card', 'data-alias': target.alias || '' });
 
-    card.appendChild(el('div', { className: 'card-title' }, target.alias || '新账本 / New Alias'));
+    card.appendChild(el('div', { className: 'card-title' }, target.alias || t('extract.newAliasTitle')));
 
     var urlGroup = el('div', { className: 'form-group' });
-    urlGroup.appendChild(el('label', null, '飞书表 URL / Feishu Table URL'));
+    urlGroup.appendChild(el('label', null, t('extract.urlLabel')));
     var urlInput = el('input', { type: 'text', className: 'url-input', placeholder: 'https://xxx.feishu.cn/base/{app_token}?table={table_id}' });
     if (target.app_token && target.table_id) {
       urlInput.value = 'https://feishu.cn/base/' + target.app_token + '?table=' + target.table_id;
     }
     urlGroup.appendChild(urlInput);
-    var parseBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '解析 URL / Parse');
+    var parseBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.parseUrlBtn'));
     parseBtn.style.marginTop = '4px';
     urlGroup.appendChild(parseBtn);
     var parseStatus = el('div', { className: 'parse-status' });
@@ -911,15 +1370,15 @@
     card.appendChild(appGroup);
 
     var tblGroup = el('div', { className: 'form-group' });
-    tblGroup.appendChild(el('label', null, '表 / Table'));
+    tblGroup.appendChild(el('label', null, t('extract.tableLabel')));
     var tblSel = el('select', { className: 'table-select' });
-    tblSel.appendChild(el('option', { value: '' }, target.table_id ? target.table_id : '— 选择表 / Select table —'));
+    tblSel.appendChild(el('option', { value: '' }, target.table_id ? target.table_id : t('extract.selectTable')));
     if (target.table_id) {
       tblSel.firstChild.textContent = target.table_id;
       tblSel.firstChild.value = target.table_id;
     }
     tblGroup.appendChild(tblSel);
-    var loadTblBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载表列表 / Load Tables');
+    var loadTblBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.loadTablesBtn'));
     loadTblBtn.style.marginTop = '4px';
     tblGroup.appendChild(loadTblBtn);
     var tableStatus = el('div', { className: 'table-status' });
@@ -948,11 +1407,11 @@
     card.appendChild(tblIdGroup);
 
     var recGroup = el('div', { className: 'form-group' });
-    recGroup.appendChild(el('label', null, '记录 / Record'));
-    var recInput = el('input', { type: 'text', className: 'record-id-input', readonly: 'readonly', placeholder: '点击下方记录选中 / Click a record below' });
+    recGroup.appendChild(el('label', null, t('extract.recordLabel')));
+    var recInput = el('input', { type: 'text', className: 'record-id-input', readonly: 'readonly', placeholder: t('extract.recordPlaceholder') });
     recInput.value = target.record_id || '';
     recGroup.appendChild(recInput);
-    var loadRecBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '加载记录 / Load Records');
+    var loadRecBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.loadRecordsBtn'));
     loadRecBtn.style.marginTop = '4px';
     var recList = el('div', { className: 'record-list' });
     recList.style.marginTop = '6px';
@@ -966,7 +1425,7 @@
       var appToken = card.querySelector('.app-token-input').value.trim();
       var tableId = card.querySelector('.table-id-input').value.trim();
       if (!appToken || !tableId) {
-        showError(recList, '请先填写 app_token 与 table_id / Enter app_token + table_id first');
+        showError(recList, t('extract.needAppTokenAndTable'));
         return;
       }
       recPageState = { page: 0, nextPageToken: null };
@@ -981,8 +1440,8 @@
     card.appendChild(aliasGroup);
 
     var yearGroup = el('div', { className: 'form-group' });
-    yearGroup.appendChild(el('label', null, 'year (可空 / optional)'));
-    var yearInput = el('input', { type: 'text', className: 'year-input', placeholder: '如 2026，可留空 / e.g. 2026, optional' });
+    yearGroup.appendChild(el('label', null, t('extract.yearLabel')));
+    var yearInput = el('input', { type: 'text', className: 'year-input', placeholder: t('extract.yearPlaceholder') });
     yearInput.value = target.year != null ? String(target.year) : '';
     yearGroup.appendChild(yearInput);
     card.appendChild(yearGroup);
@@ -1004,14 +1463,14 @@
     card.appendChild(enGroup);
 
     if (canDelete) {
-      var delBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, '删除 / Delete');
+      var delBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.deleteBtn'));
       delBtn.style.marginTop = '8px';
       delBtn.addEventListener('click', function() {
         if (targetsList) targetsList.removeChild(card);
       });
       card.appendChild(delBtn);
     } else {
-      var notice = el('p', { className: 'placeholder' }, '默认账本不可删除 / Default alias cannot be deleted');
+      var notice = el('p', { className: 'placeholder' }, t('extract.defaultNotice'));
       notice.style.marginTop = '8px';
       card.appendChild(notice);
     }
@@ -1076,14 +1535,14 @@
   function loadExtractTargets() {
     if (!targetsList) return;
     while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
-    targetsList.appendChild(el('p', { className: 'placeholder' }, '加载中 / Loading...'));
+    targetsList.appendChild(el('p', { className: 'placeholder' }, t('extract.loading')));
 
     api('/admin/config/targets').then(function(data) {
       while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
       if (data.targets == null) {
-        var msg = '配置无效或旧版模式 / Config invalid or legacy mode';
+        var msg = t('extract.configInvalidOrLegacy');
         if (data.last_reload_error) msg = data.last_reload_error;
-        if (data.mode === 'legacy') msg = '旧版单目标模式不支持 UI 编辑 / Legacy mode — UI editing unavailable';
+        if (data.mode === 'legacy') msg = t('extract.legacyMode');
         targetsList.appendChild(el('p', { className: 'status-tag status-warn' }, msg));
         return;
       }
@@ -1091,17 +1550,17 @@
       extractDefaultAlias = data.default_alias || '';
       var targets = data.targets || [];
       for (var i = 0; i < targets.length; i++) {
-        var t = targets[i];
-        var canDelete = t.alias !== extractDefaultAlias;
-        targetsList.appendChild(renderAliasCard(t, extractDefaultAlias, canDelete));
+        var tgt = targets[i];
+        var canDelete = tgt.alias !== extractDefaultAlias;
+        targetsList.appendChild(renderAliasCard(tgt, extractDefaultAlias, canDelete));
       }
       if (targets.length === 0) {
-        targetsList.appendChild(el('p', { className: 'placeholder' }, '无账本，点击"新增账本" / No aliases — click "Add Alias"'));
+        targetsList.appendChild(el('p', { className: 'placeholder' }, t('extract.noAliases')));
       }
     }).catch(function(err) {
       while (targetsList.firstChild) targetsList.removeChild(targetsList.firstChild);
-      var msg = '加载失败 / Load failed';
-      if (err && err.status === 404) msg = '管理端点未启用 / Admin endpoints disabled';
+      var msg = t('extract.loadFailed');
+      if (err && err.status === 404) msg = t('status.adminDisabled');
       else if (err && err.message) msg = err.message;
       targetsList.appendChild(el('p', { className: 'status-tag status-err' }, msg));
     });
@@ -1118,17 +1577,17 @@
     if (!extractFieldSelect) return Promise.resolve([]);
     while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
     if (!appToken || !tableId) {
-      extractFieldSelect.appendChild(el('option', { value: '' }, '— 未选择提取表 / No extract table —'));
+      extractFieldSelect.appendChild(el('option', { value: '' }, t('extract.noExtractTable')));
       extractFieldSelect.disabled = true;
       return Promise.resolve([]);
     }
-    extractFieldSelect.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    extractFieldSelect.appendChild(el('option', { value: '' }, t('extract.loading')));
     extractFieldSelect.disabled = true;
     return api('/admin/feishu/fields?app_token=' + encodeURIComponent(appToken) +
       '&table_id=' + encodeURIComponent(tableId)).then(function(data) {
       extractCachedFields = data.fields || [];
       while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
-      extractFieldSelect.appendChild(el('option', { value: '' }, '— 选择字段 / Select field —'));
+      extractFieldSelect.appendChild(el('option', { value: '' }, t('extract.selectField')));
       for (var i = 0; i < extractCachedFields.length; i++) {
         var f = extractCachedFields[i] || {};
         extractFieldSelect.appendChild(el('option', { value: f.name || '' }, f.name || ''));
@@ -1146,20 +1605,20 @@
         for (var c = 0; c < extractFieldSelect.options.length; c++) {
           if (extractFieldSelect.options[c].value === pick) { has = true; break; }
         }
-        if (!has) {
-          extractFieldSelect.insertBefore(el('option', { value: pick }, pick + '（提取表）'),
-            extractFieldSelect.options[1] || null);
-        }
-        extractFieldSelect.value = pick;
+      if (!has) {
+        extractFieldSelect.insertBefore(el('option', { value: pick }, pick + t('extract.fieldFromExtract')),
+          extractFieldSelect.options[1] || null);
+      }
+      extractFieldSelect.value = pick;
       }
       pendingSummaryField = '';
       extractFieldSelect.disabled = false;
       return extractCachedFields;
     }).catch(function(err) {
       while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
-      extractFieldSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
+      extractFieldSelect.appendChild(el('option', { value: '' }, t('extract.loadFailedOption')));
       if (extractBanner) showBanner(extractBanner, 'err',
-        (err && err.message) || '加载提取表字段失败 / Load extract fields failed');
+        (err && err.message) || t('extract.loadFieldsFailed'));
       return [];
     });
   }
@@ -1205,7 +1664,7 @@
     }).then(function(resp) {
       extractBaseGeneration = resp.generation || extractBaseGeneration;
       clearDirty();
-      showBanner(extractBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
+      showBanner(extractBanner, 'ok', t('extract.saved') + resp.generation);
       refreshStatus();
       loadExtractTargets();
       // Default-alias extract table may have changed → repopulate summary dropdown.
@@ -1225,14 +1684,14 @@
           if (loc.field) markFieldError(loc.cardIndex, loc.field);
         }
         if (!extractBanner.firstChild) {
-          showBanner(extractBanner, 'err', '校验失败，请检查标红字段 / Validation failed — check highlighted fields');
+          showBanner(extractBanner, 'err', t('extract.validationFailed'));
         }
         return;
       }
       if (status === 409 && detail && detail.error) {
         var code = detail.error.code;
         if (code === 'STALE_WRITE') {
-          showBanner(extractBanner, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+          showBanner(extractBanner, 'warn', t('extract.configChangedReloading'));
           loadExtractTargets();
           return;
         }
@@ -1241,7 +1700,7 @@
           return;
         }
       }
-      var msg = '保存失败 / Save failed';
+      var msg = t('extract.saveFailed');
       if (detail && detail.error && detail.error.message) msg = detail.error.message;
       else if (err && err.message) msg = err.message;
       showBanner(extractBanner, 'err', msg);
@@ -1301,12 +1760,12 @@
     var url = billUrlInput.value.trim();
     if (!url) {
       showError(billSection.querySelector('.parse-status'),
-        '请输入 URL / Please enter a URL');
+        t('extract.needUrl'));
       return;
     }
     var status = billSection.querySelector('.parse-status');
     while (status.firstChild) status.removeChild(status.firstChild);
-    status.appendChild(el('span', { className: 'placeholder' }, '解析中 / Parsing...'));
+    status.appendChild(el('span', { className: 'placeholder' }, t('extract.parsing')));
     api('/admin/feishu/parse-url', {
       method: 'POST',
       body: JSON.stringify({ url: url }),
@@ -1321,7 +1780,7 @@
       billLoadTablesFromAppToken();
     }).catch(function(err) {
       while (status.firstChild) status.removeChild(status.firstChild);
-      var msg = '解析失败 / Parse failed';
+      var msg = t('extract.parseFailed');
       if (err && err.status === 422 && err.body && err.body.detail && err.body.detail.error) {
         msg = err.body.detail.error.message || msg;
       } else if (err && err.message) {
@@ -1335,19 +1794,19 @@
     var appToken = billAppTokenInput.value.trim();
     if (!appToken) {
       showError(billSection.querySelector('.table-status'),
-        '请先解析或填写 app_token / Parse or enter app_token first');
+        t('extract.needAppToken'));
       return;
     }
     while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
-    billTableSelect.appendChild(el('option', { value: '' }, '加载中 / Loading...'));
+    billTableSelect.appendChild(el('option', { value: '' }, t('extract.loading')));
     billTableSelect.disabled = true;
     api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
-      billTableSelect.appendChild(el('option', { value: '' }, '— 选择表 / Select table —'));
+      billTableSelect.appendChild(el('option', { value: '' }, t('extract.selectTable')));
       billCachedTables = data.tables || [];
       for (var i = 0; i < billCachedTables.length; i++) {
-        var t = billCachedTables[i];
-        billTableSelect.appendChild(el('option', { value: t.table_id }, t.name || t.table_id));
+        var cachedTbl = billCachedTables[i];
+        billTableSelect.appendChild(el('option', { value: cachedTbl.table_id }, cachedTbl.name || cachedTbl.table_id));
       }
       var currentTbl = billTableIdInput.value.trim();
       if (currentTbl) {
@@ -1362,8 +1821,8 @@
       billUpdateTableName();
     }).catch(function(err) {
       while (billTableSelect.firstChild) billTableSelect.removeChild(billTableSelect.firstChild);
-      billTableSelect.appendChild(el('option', { value: '' }, '— 加载失败 / Load failed —'));
-      showError(billSection.querySelector('.table-status'), err.message || '加载表列表失败');
+      billTableSelect.appendChild(el('option', { value: '' }, t('extract.loadFailedOption')));
+      showError(billSection.querySelector('.table-status'), err.message || t('extract.loadTablesFailed'));
     });
   }
 
@@ -1377,9 +1836,9 @@
     var tblId = billTableIdInput ? billTableIdInput.value.trim() : '';
     if (!tblId || !billCachedTables.length) return;
     for (var i = 0; i < billCachedTables.length; i++) {
-      var t = billCachedTables[i] || {};
-      if (t.table_id === tblId) {
-        nameEl.appendChild(document.createTextNode(t.name || t.table_id));
+      var cachedInfo = billCachedTables[i] || {};
+      if (cachedInfo.table_id === tblId) {
+        nameEl.appendChild(document.createTextNode(cachedInfo.name || cachedInfo.table_id));
         return;
       }
     }
@@ -1395,7 +1854,7 @@
       return billCachedFields;
     }).catch(function(err) {
       billCachedFields = [];
-      showError(billSection.querySelector('.table-status'), err.message || '加载字段列表失败');
+      showError(billSection.querySelector('.table-status'), err.message || t('bill.loadFieldsFailed'));
       return [];
     });
   }
@@ -1591,7 +2050,7 @@
       if (keySel && keySel.value && cb && cb.checked) n++;
     }
     while (countEl.firstChild) countEl.removeChild(countEl.firstChild);
-    countEl.appendChild(document.createTextNode('已匹配 ' + n + '/' + rows.length + ' 字段 · Matched'));
+    countEl.appendChild(document.createTextNode(t('bill.matchedCount').replace('N', String(n)).replace('/T', '/' + rows.length)));
   }
 
   // Render the two token badges (app_token / table_id) into #bill-tokens.
@@ -1663,7 +2122,7 @@
     // ── AI 键映射列：下拉选择目标 ai_key 或 跳过.
     var aikeyCell = el('td', { className: 'col-ai-key' });
     var keySel = el('select', { className: 'ai-key-select' });
-    keySel.appendChild(el('option', { value: '' }, '跳过 / Skip'));
+    keySel.appendChild(el('option', { value: '' }, t('bill.skipOption')));
     // Bill-target keys only — summary lives in the extract-section dropdown.
     var billAiKeys = ['description', 'flow_type', 'amount', 'category',
       'payment_method', 'bill_date', 'raw_source'];
@@ -1674,7 +2133,7 @@
     // for non-summary fields, but defensive), inject an extra option so the
     // browser doesn't silently reset to '跳过'.
     if (mappedAiKey && billAiKeys.indexOf(mappedAiKey) === -1) {
-      keySel.insertBefore(el('option', { value: mappedAiKey }, mappedAiKey + '（其他）'),
+      keySel.insertBefore(el('option', { value: mappedAiKey }, mappedAiKey + t('bill.otherTag')),
         keySel.options[1] || null);
     }
     keySel.value = mappedAiKey || '';
@@ -1690,8 +2149,8 @@
     var typeCell = el('td', { className: 'col-type' });
     var typeSel = el('select', { className: 'type-select' });
     var typeOpts = ['text', 'number', 'single_select', 'date', 'passthrough'];
-    for (var t = 0; t < typeOpts.length; t++) {
-      typeSel.appendChild(el('option', { value: typeOpts[t] }, typeOpts[t]));
+    for (var ti = 0; ti < typeOpts.length; ti++) {
+      typeSel.appendChild(el('option', { value: typeOpts[ti] }, typeOpts[ti]));
     }
     typeSel.value = type;
     typeCell.appendChild(typeSel);
@@ -1729,15 +2188,15 @@
       if (!hasKey) {
         chip.classList.remove('match-auto', 'match-manual');
         chip.classList.add('match-none');
-        chip.appendChild(document.createTextNode('○ 跳过'));
+        chip.appendChild(document.createTextNode(t('bill.chipSkip')));
       } else if (derived) {
         chip.classList.remove('match-manual', 'match-none');
         chip.classList.add('match-auto');
-        chip.appendChild(document.createTextNode('✓ 自动匹配'));
+        chip.appendChild(document.createTextNode(t('bill.chipAuto')));
       } else {
         chip.classList.remove('match-auto', 'match-none');
         chip.classList.add('match-manual');
-        chip.appendChild(document.createTextNode('● 手动'));
+        chip.appendChild(document.createTextNode(t('bill.chipManual')));
       }
     }
     refreshChip();
@@ -1746,13 +2205,13 @@
       while (fbSel.firstChild) fbSel.removeChild(fbSel.firstChild);
       var selType = typeSel.value;
       if (selType === 'single_select' && fieldOptions && fieldOptions.length) {
-        fbSel.appendChild(el('option', { value: '' }, '— 无 / None —'));
+        fbSel.appendChild(el('option', { value: '' }, t('bill.noneOption')));
         for (var o = 0; o < fieldOptions.length; o++) {
           fbSel.appendChild(el('option', { value: fieldOptions[o] }, fieldOptions[o]));
         }
         fbSel.disabled = false;
       } else {
-        fbSel.appendChild(el('option', { value: '' }, '— 不可用 / N/A —'));
+        fbSel.appendChild(el('option', { value: '' }, t('bill.naOption')));
         fbSel.disabled = true;
       }
       fbSel.value = (selType === 'single_select' && fb) ? fb : '';
@@ -1934,7 +2393,7 @@
       // Fail-closed: registry unavailable → show the error, no form.
       if (data.profile === null || data.config_valid === false) {
         if (billBanner) {
-          var msg = '配置无效 / Config Invalid';
+          var msg = t('status.configInvalid');
           if (data.last_reload_error) msg += ' — ' + data.last_reload_error;
           showBanner(billBanner, 'err', msg);
         }
@@ -1992,14 +2451,14 @@
       if (err && err.status === 404) {
         var body = err.body;
         if (body && body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
-          if (billBanner) showBanner(billBanner, 'info', 'AI 未启用 / AI not enabled');
+          if (billBanner) showBanner(billBanner, 'info', t('status.aiNotEnabled'));
           return;
         }
-        if (billBanner) showBanner(billBanner, 'warn', '管理端点未启用 / Admin endpoints disabled');
+        if (billBanner) showBanner(billBanner, 'warn', t('status.adminDisabled'));
         return;
       }
       if (billBanner) {
-        var msg = '加载失败 / Load failed';
+        var msg = t('extract.loadFailed');
         if (err && err.body && err.body.detail && err.body.detail.error) {
           msg = err.body.detail.error.message || msg;
         } else if (err && err.message) msg = err.message;
@@ -2013,11 +2472,11 @@
     if (evt && evt.preventDefault) evt.preventDefault();
     var fields = billCachedFields || [];
     if (!fields.length) {
-      if (billBanner) showBanner(billBanner, 'warn', '请先选择表并加载字段 / Select a table and load fields first');
+      if (billBanner) showBanner(billBanner, 'warn', t('bill.needTableFirst'));
       return;
     }
     renderBillRows(fields);
-    if (billBanner) showBanner(billBanner, 'info', '已应用自动推导 / Auto-derive applied');
+    if (billBanner) showBanner(billBanner, 'info', t('bill.autoDeriveApplied'));
   });
 
   if (saveProfileBtn) saveProfileBtn.addEventListener('click', function() {
@@ -2029,9 +2488,8 @@
     var summaryField = billGetSummaryField();
     if (!summaryField) {
       billClearErrors();
-      showBanner(billBanner, 'err',
-        '请先在提取表配置区选择摘要字段 / Select a summary field in the extract-section first');
-      billShowErrorRow('摘要字段为空 — 前往提取表配置区选择 / Summary field empty — set it in the extract section');
+      showBanner(billBanner, 'err', t('bill.needSummaryFirst'));
+      billShowErrorRow(t('bill.summaryEmptyErrorRow'));
       return;
     }
     saveProfileBtn.disabled = true;
@@ -2043,7 +2501,7 @@
     }).then(function(resp) {
       billBaseGeneration = resp.generation || billBaseGeneration;
       clearDirty();
-      showBanner(billBanner, 'ok', '已保存，generation ' + resp.generation + ' / Saved, generation ' + resp.generation);
+      showBanner(billBanner, 'ok', t('extract.saved') + resp.generation);
       refreshStatus();
     }).catch(function(err) {
       var status = err && err.status;
@@ -2067,7 +2525,7 @@
           if (loc.field) billMarkRowError(loc.rowIndex, loc.field);
         }
         if (!billBanner.firstChild) {
-          showBanner(billBanner, 'err', '校验失败，请检查标红字段 / Validation failed — check highlighted fields');
+          showBanner(billBanner, 'err', t('extract.validationFailed'));
         }
         return;
       }
@@ -2080,13 +2538,13 @@
             msgs.push(locStr + ': ' + detail[p].msg);
           }
         }
-        showBanner(billBanner, 'err', msgs.join('; ') || '请求体校验失败 / Body validation failed');
+        showBanner(billBanner, 'err', msgs.join('; ') || t('bill.bodyValidationFailed'));
         return;
       }
       if (status === 409 && detail && detail.error) {
         var code = detail.error.code;
         if (code === 'STALE_WRITE') {
-          showBanner(billBanner, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+          showBanner(billBanner, 'warn', t('extract.configChangedReloading'));
           loadBillProfile();
           return;
         }
@@ -2095,7 +2553,7 @@
           return;
         }
       }
-      var msg = '保存失败 / Save failed';
+      var msg = t('extract.saveFailed');
       if (detail && detail.error && detail.error.message) msg = detail.error.message;
       else if (err && err.message) msg = err.message;
       showBanner(billBanner, 'err', msg);
@@ -2150,7 +2608,7 @@
       // 409 STALE_WRITE — uniform: yellow banner + auto-reload.
       if (status === 409 && detail && detail.error && detail.error.code === 'STALE_WRITE') {
         if (bannerEl) {
-          showBanner(bannerEl, 'warn', '配置已被修改，正在重新加载 / Config changed — reloading');
+          showBanner(bannerEl, 'warn', t('extract.configChangedReloading'));
         }
         if (onErr) onErr(err, 'stale');
         return;
@@ -2201,11 +2659,9 @@
       if (aiApiKeyHint) {
         while (aiApiKeyHint.firstChild) aiApiKeyHint.removeChild(aiApiKeyHint.firstChild);
         if (ai.ai_api_key_set) {
-          aiApiKeyHint.appendChild(el('span', null,
-            '已设置——留空保持不变 / Set — leave empty to keep current'));
+          aiApiKeyHint.appendChild(el('span', null, t('aiConn.keySetKeep')));
         } else {
-          aiApiKeyHint.appendChild(el('span', null,
-            '未设置 / Unset'));
+          aiApiKeyHint.appendChild(el('span', null, t('aiConn.keyUnset')));
         }
       }
     }
@@ -2216,17 +2672,16 @@
       kv.appendChild(el('dt', null, 'FEISHU_APP_ID'));
       kv.appendChild(el('dd', null, feishuAppId || '-'));
       kv.appendChild(el('dt', null, 'FEISHU_APP_SECRET'));
-      kv.appendChild(el('dd', null, other.feishu_app_secret_set ? '已设置 / Set' : '未设置 / Unset'));
+      kv.appendChild(el('dd', null, other.feishu_app_secret_set ? t('aiConn.keySet') : t('aiConn.keyUnset')));
       kv.appendChild(el('dt', null, 'WEBHOOK_SHARED_TOKEN'));
-      kv.appendChild(el('dd', null, other.webhook_shared_token_set ? '已设置 / Set' : '未设置 / Unset'));
+      kv.appendChild(el('dd', null, other.webhook_shared_token_set ? t('aiConn.keySet') : t('aiConn.keyUnset')));
       kv.appendChild(el('dt', null, 'CONFIG_RELOAD_TOKEN'));
-      kv.appendChild(el('dd', null, other.config_reload_token_set ? '已设置 / Set' : '未设置 / Unset'));
+      kv.appendChild(el('dd', null, other.config_reload_token_set ? t('aiConn.keySet') : t('aiConn.keyUnset')));
       envOtherList.appendChild(kv);
     }
     // env_file is null → env vars set directly, PUT will 409.
     if (!data.env_file && envBanner) {
-      showBanner(envBanner, 'warn',
-        '无 env 文件——保存将失败（环境变量直设模式）/ No env file — save will 409');
+      showBanner(envBanner, 'warn', t('aiConn.noEnvFile'));
     }
   }
 
@@ -2236,12 +2691,11 @@
       renderAiConnection(data);
     }).catch(function(err) {
       if (err && err.status === 404) {
-        if (envBanner) showBanner(envBanner, 'warn',
-          '管理端点未启用 / Admin endpoints disabled');
+        if (envBanner) showBanner(envBanner, 'warn', t('status.adminDisabled'));
         return;
       }
       if (envBanner) {
-        var msg = '加载失败 / Load failed';
+        var msg = t('extract.loadFailed');
         if (err && err.body && err.body.detail && err.body.detail.error) {
           msg = err.body.detail.error.message || msg;
         } else if (err && err.message) msg = err.message;
@@ -2309,8 +2763,7 @@
   function showRestartBanner() {
     if (!restartBanner) return;
     while (restartBanner.firstChild) restartBanner.removeChild(restartBanner.firstChild);
-    restartBanner.appendChild(el('span', null,
-      'AI 连接已更新，重启服务后生效 / AI connection updated — restart to apply'));
+    restartBanner.appendChild(el('span', null, t('aiConn.restartBanner')));
     restartBanner.style.display = 'block';
   }
 
@@ -2326,7 +2779,7 @@
         });
       },
       function(resp) {
-        showBanner(envBanner, 'ok', '已保存 / Saved');
+        showBanner(envBanner, 'ok', t('aiConn.saved'));
         if (resp && resp.restart_required) showRestartBanner();
         loadEnv();
       },
@@ -2342,11 +2795,11 @@
           }
           if (!envBanner.firstChild) {
             var first = detail[0];
-            showBanner(envBanner, 'err', (first && first.msg) || '校验失败 / Validation failed');
+            showBanner(envBanner, 'err', (first && first.msg) || t('aiConn.validationFailed'));
           }
           return;
         }
-        var msg = '保存失败 / Save failed';
+        var msg = t('extract.saveFailed');
         if (detail && detail.error && detail.error.message) msg = detail.error.message;
         else if (err && err.message) msg = err.message;
         showBanner(envBanner, 'err', msg);
@@ -2381,8 +2834,7 @@
   if (testPromptBtn) {
     testPromptBtn.addEventListener('click', function(evt) {
       if (isDirty()) {
-        var ok = confirm('有未保存的改动，干跑将使用已保存的配置。继续？\n' +
-          'You have unsaved edits — the dry-run will use the SAVED config. Continue?');
+        var ok = confirm(t('tester.dirtyConfirm'));
         if (!ok) {
           evt.preventDefault();
           evt.stopImmediatePropagation();
