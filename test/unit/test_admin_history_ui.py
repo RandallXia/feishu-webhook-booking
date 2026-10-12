@@ -126,21 +126,24 @@ def test_admin_js_node_check_passes():
     )
 
 
-def test_admin_html_history_section_is_first_card():
+def test_admin_html_card_order_token_first_history_second():
     """
-    GIVEN app/static/admin.html (history promoted to the page's first card)
+    GIVEN app/static/admin.html (token restored as first visible card;
+       history second with the sticky top slot)
     WHEN the DOM order of the container's cards is scanned
-    THEN id="history-section" appears BEFORE both id="setup-card" and
-       id="token-card" (the history card is the new global-top surface,
-       replacing the token card's top position)
+    THEN id="token-card" is the first visible card (after the hidden
+       id="setup-card"), id="history-section" follows it, and the status bar
+       comes after the history card
     """
     html = _read_static("admin.html")
-    hist = html.index('id="history-section"')
-    assert hist < html.index('id="setup-card"'), (
-        "history-section must precede setup-card"
+    assert html.index('id="setup-card"') < html.index('id="token-card"'), (
+        "setup-card (hidden) must precede token-card"
     )
-    assert hist < html.index('id="token-card"'), (
-        "history-section must precede token-card"
+    assert html.index('id="token-card"') < html.index('id="history-section"'), (
+        "token-card must be the first visible card, before history-section"
+    )
+    assert html.index('id="history-section"') < html.index('id="status-bar"'), (
+        "history-section must sit above the status bar"
     )
 
 
@@ -160,20 +163,66 @@ def test_admin_css_sticky_moved_to_history_section():
     ) is None, "#token-card must no longer be sticky"
 
 
-def test_ocr_flow_success_branch_refreshes_history():
+def test_ocr_flow_always_resyncs_history_after_lifecycle():
     """
     GIVEN app/static/admin.js with the OCR flow tester
-    WHEN the success branch of the webhook result is scanned (from the
-       renderOcrFlowResult call to the flow's .catch handler)
-    THEN it calls loadHistory() exactly once (auto-refresh on success —
-       failed/duplicate branches stay untouched)
+    WHEN the whole ocrFlowBtn click-handler is scanned (from the
+       addEventListener to the handler's final closing brace)
+    THEN the succeeded branch no longer carries a dedicated loadHistory()
+      AND the lifecycle-final .then block disables the button and then
+         resyncs the history list (covers succeeded/failed/duplicate — each
+         writes exactly one history row)
+      AND the network-failure .catch branch also resyncs the history list
+         (non-200 writes no row, so the resync restores the real list)
     """
     js = _read_static("admin.js")
-    success_idx = js.index("renderOcrFlowResult(result.status, result.body)")
-    catch_idx = js.index(".catch(function(err) {", success_idx)
-    success_branch = js[success_idx:catch_idx]
-    assert re.search(r"\bloadHistory\(\)", success_branch), (
-        "OCR flow success branch must call loadHistory() after showBanner"
+    handler_idx = js.index("ocrFlowBtn.addEventListener")
+    close_idx = js.index("\n  });", handler_idx)
+    handler = js[handler_idx:close_idx]
+
+    success_idx = handler.index("renderOcrFlowResult(result.status, result.body)")
+    catch_idx = handler.index(".catch(function(err) {", success_idx)
+    success_branch = handler[success_idx:catch_idx]
+    assert re.search(r"\bloadHistory\(\)", success_branch) is None, (
+        "succeeded branch must NOT call loadHistory() — the lifecycle-final "
+        ".then resync replaces the old dedicated success-only refresh"
+    )
+
+    assert re.search(
+        r"ocrFlowBtn\.disabled\s*=\s*false;\s*\n\s*loadHistory\(\);", handler
+    ), "lifecycle-final .then must disable the button then resync loadHistory()"
+
+    catch_block = handler[catch_idx:]
+    assert re.search(r"\bloadHistory\(\)", catch_block), (
+        ".catch branch must call loadHistory() to restore the real list"
+    )
+
+
+def test_show_history_pending_defined_and_used():
+    """
+    GIVEN app/static/admin.js with the in-flight pending placeholder
+    WHEN the file is scanned for showHistoryPending
+    THEN the function is defined
+      AND loadHistory() calls it before its limit parsing
+      AND the OCR submit path calls it right after the "Sending..." placeholder
+    """
+    js = _read_static("admin.js")
+
+    assert re.search(r"function\s+showHistoryPending\s*\(", js), (
+        "showHistoryPending() must be defined"
+    )
+
+    load_idx = js.index("function loadHistory()")
+    render_idx = js.index("function renderHistory(")
+    load_body = js[load_idx:render_idx]
+    assert re.search(r"\bshowHistoryPending\(\);", load_body), (
+        "loadHistory() must show the pending placeholder at its start"
+    )
+
+    submit_idx = js.index("'发送中... / Sending...'")
+    submit_slice = js[submit_idx - 300:submit_idx + 300]
+    assert re.search(r"\bshowHistoryPending\(\);", submit_slice), (
+        "OCR submit path must enter the pending state when the request starts"
     )
 
 

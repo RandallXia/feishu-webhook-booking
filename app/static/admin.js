@@ -502,6 +502,7 @@
     // Clear previous result
     while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
     ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '发送中... / Sending...'));
+    showHistoryPending();
 
     fetch('/v1/webhook/ocr', {
       method: 'POST',
@@ -518,11 +519,6 @@
       renderOcrFlowResult(result.status, result.body);
       if (result.status === 200 && result.body.ai_status === 'succeeded') {
         showBanner(ocrFlowBanner, 'ok', '流程成功——请到飞书账本查看新纪录 / Flow succeeded — check Feishu for the new record');
-        // A new record was just created — refresh the history card so it shows
-        // up without a manual click. Only the succeeded branch reloads:
-        // failed wrote nothing to the bill table, and duplicate added no new
-        // entry, so neither needs a refresh.
-        loadHistory();
       } else if (result.status === 200 && result.body.ai_status === 'failed') {
         showBanner(ocrFlowBanner, 'warn', '原始信息已写入，但 AI 阶段失败 / 原始信息 written but AI stage failed');
       } else if (result.status !== 200) {
@@ -533,9 +529,11 @@
       while (ocrFlowResult.firstChild) ocrFlowResult.removeChild(ocrFlowResult.firstChild);
       ocrFlowResult.appendChild(el('p', { className: 'placeholder' }, '请求失败: ' + (err.message || err)));
       showBanner(ocrFlowBanner, 'err', '请求失败 / Request failed');
+      loadHistory();
     })
     .then(function() {
       ocrFlowBtn.disabled = false;
+      loadHistory();
     });
   });
 
@@ -553,8 +551,24 @@
   var historyRefreshBtn = document.getElementById('history-refresh-btn');
   var historyLimitInput = document.getElementById('history-limit-input');
 
+  // In-flight placeholder: one pending row at the top of the history list.
+  // Used by every loadHistory() pull and by the OCR flow while its webhook
+  // is in flight; the next real renderHistory() (or the 404 placeholder)
+  // replaces it. Pure client-side state — the server writes nothing for it.
+  function showHistoryPending() {
+    if (!historyList) return;
+    while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
+    var row = el('div', { className: 'history-entry history-entry-pending' });
+    var meta = el('div', { className: 'history-meta' });
+    meta.appendChild(el('span', { className: 'status-tag status-info' }, '⏳ 解析中 / Parsing…'));
+    meta.appendChild(el('span', null, '正在处理最新请求 / Waiting for the latest request'));
+    row.appendChild(meta);
+    historyList.appendChild(row);
+  }
+
   function loadHistory() {
     if (!historyList) return;
+    showHistoryPending();
     var n = parseInt(historyLimitInput.value, 10);
     if (isNaN(n) || n < 1) n = 1;
     if (n > 1000) n = 1000;
