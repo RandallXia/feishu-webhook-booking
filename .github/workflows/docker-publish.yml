@@ -71,8 +71,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
-          load: true
-          
+
   # ===== 新增：自动创建 Release =====
   release:
     needs: build-and-push    # 等构建成功再发版
