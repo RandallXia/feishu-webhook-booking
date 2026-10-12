@@ -518,6 +518,11 @@
       renderOcrFlowResult(result.status, result.body);
       if (result.status === 200 && result.body.ai_status === 'succeeded') {
         showBanner(ocrFlowBanner, 'ok', '流程成功——请到飞书账本查看新纪录 / Flow succeeded — check Feishu for the new record');
+        // A new record was just created — refresh the history card so it shows
+        // up without a manual click. Only the succeeded branch reloads:
+        // failed wrote nothing to the bill table, and duplicate added no new
+        // entry, so neither needs a refresh.
+        loadHistory();
       } else if (result.status === 200 && result.body.ai_status === 'failed') {
         showBanner(ocrFlowBanner, 'warn', '原始信息已写入，但 AI 阶段失败 / 原始信息 written but AI stage failed');
       } else if (result.status !== 200) {

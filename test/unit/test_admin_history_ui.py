@@ -126,6 +126,57 @@ def test_admin_js_node_check_passes():
     )
 
 
+def test_admin_html_history_section_is_first_card():
+    """
+    GIVEN app/static/admin.html (history promoted to the page's first card)
+    WHEN the DOM order of the container's cards is scanned
+    THEN id="history-section" appears BEFORE both id="setup-card" and
+       id="token-card" (the history card is the new global-top surface,
+       replacing the token card's top position)
+    """
+    html = _read_static("admin.html")
+    hist = html.index('id="history-section"')
+    assert hist < html.index('id="setup-card"'), (
+        "history-section must precede setup-card"
+    )
+    assert hist < html.index('id="token-card"'), (
+        "history-section must precede token-card"
+    )
+
+
+def test_admin_css_sticky_moved_to_history_section():
+    """
+    GIVEN app/static/admin.css
+    WHEN the sticky-top rule is scanned
+    THEN #history-section carries the sticky rule that previously belonged to
+       #token-card, and #token-card no longer has any sticky styling
+    """
+    css = _read_static("admin.css")
+    assert re.search(
+        r"#history-section\s*\{[^}]*position:\s*sticky", css
+    ), "#history-section must carry the sticky-top rule"
+    assert re.search(
+        r"#token-card\s*\{[^}]*position:\s*sticky", css
+    ) is None, "#token-card must no longer be sticky"
+
+
+def test_ocr_flow_success_branch_refreshes_history():
+    """
+    GIVEN app/static/admin.js with the OCR flow tester
+    WHEN the success branch of the webhook result is scanned (from the
+       renderOcrFlowResult call to the flow's .catch handler)
+    THEN it calls loadHistory() exactly once (auto-refresh on success —
+       failed/duplicate branches stay untouched)
+    """
+    js = _read_static("admin.js")
+    success_idx = js.index("renderOcrFlowResult(result.status, result.body)")
+    catch_idx = js.index(".catch(function(err) {", success_idx)
+    success_branch = js[success_idx:catch_idx]
+    assert re.search(r"\bloadHistory\(\)", success_branch), (
+        "OCR flow success branch must call loadHistory() after showBanner"
+    )
+
+
 def test_history_load_wired_into_init_and_refresh_button():
     """
     GIVEN app/static/admin.js exists
