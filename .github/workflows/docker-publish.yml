@@ -12,6 +12,9 @@ permissions:
   packages: write    # 推送 GHCR 需要
 
 jobs:
+  # master push → 构建验证（不推送 Docker Hub / GHCR）
+  # tag push → 构建并发布到 Docker Hub / GHCR
+  # PR → 构建验证（不推送）
   build-and-push:
     runs-on: ubuntu-latest
     steps:
@@ -25,41 +28,50 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
+      - name: Extract metadata (tag build)
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: meta_tag
         uses: docker/metadata-action@v5
         with:
           images: |
             randallxia/feishu-webhook-booking
             ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
             type=semver,pattern={{version}}
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+          tags: ${{ steps.meta_tag.outputs.tags }}
+          labels: ${{ steps.meta_tag.outputs.labels }}
+
+      - name: Build only (master push / PR — no publish)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          load: true
           
   # ===== 新增：自动创建 Release =====
   release:
