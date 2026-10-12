@@ -6,9 +6,12 @@ import logging
 import os
 import re
 import secrets
+import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
@@ -28,6 +31,7 @@ from .ai_profile import (
 from .config import Settings, get_settings
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import FieldSpec, encode_fields
+from .history_store import HistoryEntry, HistoryStore
 from .pipeline import AiPipeline, PipelineResult
 from .target_registry import (
     FeishuTargetConfig,
@@ -103,10 +107,18 @@ async def lifespan(app: FastAPI):
         extractor = AiExtractor(settings)
         app.state.ai_extractor = extractor
         app.state.ai_pipeline = AiPipeline(settings, extractor, app.state.feishu_client)
+        # Request history store — built only when AI is on AND the operator
+        # configured AI_HISTORY_DB_PATH. HistoryStore never raises; a broken
+        # path degrades to a no-op store (history silently disabled).
+        if settings.ai_history_db_path is not None:
+            app.state.history_store = HistoryStore(settings.ai_history_db_path)
+        else:
+            app.state.history_store = None
     else:
         app.state.ai_extractor = None
         app.state.ai_registry = None
         app.state.ai_pipeline = None
+        app.state.history_store = None
 
     yield
 
@@ -301,11 +313,42 @@ async def ingest_ocr(
     ai_pipeline: AiPipeline | None = getattr(request.app.state, "ai_pipeline", None)
     ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
     if settings.ai_enabled and ai_pipeline is not None and ai_registry is not None:
+        stage_start = time.monotonic()
+
+        async def _record_history(
+            ai_status: str,
+            *,
+            error: str | None = None,
+            bill_record_id: str | None = None,
+            summary: str | None = None,
+            extracted: dict | None = None,
+            warnings: list[str] | None = None,
+        ) -> None:
+            store = getattr(request.app.state, "history_store", None)
+            if store is None:
+                return
+            entry = HistoryEntry(
+                ts=time.time(),
+                ts_iso=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds"),
+                request_id=request_id,
+                model=settings.ai_model or "",
+                elapsed_ms=int((time.monotonic() - stage_start) * 1000),
+                ai_status=ai_status,
+                error=error,
+                bill_record_id=bill_record_id,
+                original_text=original_text,
+                summary=summary,
+                extracted=extracted or {},
+                warnings=warnings or [],
+            )
+            await asyncio.to_thread(store.insert, entry)
+
         try:
             await ai_registry.maybe_reload()
             snapshot = ai_registry.get_snapshot()
         except AiProfileRegistryUnavailableError as exc:
             logger.exception("ai profile registry unavailable request_id=%s", request_id)
+            await _record_history("failed", error="profile registry unavailable")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -333,6 +376,14 @@ async def ingest_ocr(
             ai_status,
             ai_record_id or "",
             len(result.warnings),
+        )
+        await _record_history(
+            result.ai_status,
+            error=result.error,
+            bill_record_id=result.bill_record_id,
+            summary=result.summary,
+            extracted=result.extracted or None,
+            warnings=result.warnings or None,
         )
 
     return WebhookSuccessResponse(
@@ -594,6 +645,50 @@ async def ai_profile_inspect(
         for field, options in snapshot.option_whitelists.items()
     }
     return base
+
+
+@app.get(
+    "/admin/ai/history",
+    responses={401: {"model": WebhookErrorResponse}, 404: {"model": WebhookErrorResponse}},
+)
+async def admin_request_history(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict[str, object]:
+    settings: Settings = request.app.state.settings
+    request_id = x_request_id or f"req_{uuid.uuid4().hex[:12]}"
+
+    _require_admin_auth(settings, x_admin_token, request_id)
+
+    ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
+    if not settings.ai_enabled or ai_registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {"code": "AI_DISABLED", "message": "AI stage is disabled"},
+            },
+        )
+
+    store = getattr(request.app.state, "history_store", None)
+    if settings.ai_history_db_path is None or store is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "request_id": request_id,
+                "error": {
+                    "code": "HISTORY_DISABLED",
+                    "message": "request history is not configured",
+                },
+            },
+        )
+
+    items = await asyncio.to_thread(store.list_recent, limit)
+    return {"success": True, "items": items, "limit": limit}
 
 
 def _field_spec_to_dict(spec: FieldSpec) -> dict[str, object]:
