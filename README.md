@@ -48,6 +48,10 @@ When `AI_ENABLED=true`, the service takes over Feishu's "AI auto-fill" after wri
 
 详细配置、迁移清单、TOML schema、管理端点见 [docs/ai-pipeline.md](docs/ai-pipeline.md)（英文：[docs/en/ai-pipeline.md](docs/en/ai-pipeline.md)）。
 
+开启 `AI_HISTORY_DB_PATH` 后，每次 AI 记账请求（含失败原因、原始 OCR、精简原始数据）都会持久化到本机 SQLite 库，并可在 `/admin/ai` 页面的「记账历史」卡片查看。详见 [AI 提取管线文档](docs/ai-pipeline.md)。
+
+When `AI_HISTORY_DB_PATH` is set, every AI billing request (including failure reason, original OCR text, and the extracted summary) is persisted to a local SQLite database, viewable in the "Request History" card of `/admin/ai`. See the [AI pipeline docs](docs/ai-pipeline.md).
+
 ## 运行模式
 
 当前仓库支持两种运行模式：

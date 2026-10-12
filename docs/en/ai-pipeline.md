@@ -461,3 +461,66 @@ enabled = false                  # disable this field: AI still extracts but doe
 ```
 
 The `enabled` key defaults to `true`, so existing TOML profiles (without the key) behave identically — no migration needed on upgrade. A config-UI save serializes the key via `dump_profile` (written explicitly whether true or false, for clean UI roundtrip).
+
+## 14. Request History
+
+When `AI_HISTORY_DB_PATH` is set, the service persists every AI billing request to a local SQLite database (Python's built-in `sqlite3` — zero new dependencies), viewable in the "Request History" card of the config page. Writes are atomic, so a process crash never leaves corrupted rows.
+
+### Configuration
+
+| Scenario | Behavior |
+|----------|----------|
+| `AI_HISTORY_DB_PATH` unset | History is fully disabled with zero overhead (no file created, no writes) — behavior identical to previous versions |
+| `AI_HISTORY_DB_PATH` set | Every AI billing request is recorded as one row |
+
+For Docker deployments set it to `/data/history.db` (compose already mounts the writable volume `./data:/data`); for a bare local run any writable path works, e.g. `./data/history.db`.
+
+### Recorded fields
+
+Each record carries 12 fields:
+
+| Field | Description |
+|-------|-------------|
+| `ts` / `ts_iso` | Record time (Unix timestamp / Asia/Shanghai ISO string) |
+| `request_id` | Unique id of the request (reconcilable with webhook logs) |
+| `model` | AI model name (from `AI_MODEL`) |
+| `elapsed_ms` | Total AI-stage duration (milliseconds) |
+| `ai_status` | Result status: `succeeded` / `failed` / `duplicate` |
+| `error` | Failure reason (non-empty only for failed; fixed template text, never carries an upstream payload) |
+| `bill_record_id` | Created bill-detail record id (non-empty only for succeeded) |
+| `original_text` | Original OCR text (stored in the db only, never logged) |
+| `summary` | Condensed original data (AI-extracted summary, non-empty only for succeeded) |
+| `extracted` | Extracted fields (JSON: amount/category/flow_type/description) |
+| `warnings` | Warning list (JSON array, e.g. fallback-hit notices) |
+
+### What gets recorded
+
+- **Recorded**: the four AI-stage exit paths — `succeeded` (extraction ok), `failed` (extract/encode/record-create failure), `duplicate` (dedup hit), and registry 503 (profile registry unavailable, recorded as `failed` + `error="profile registry unavailable"`).
+- **Not recorded**: 401 (bad token), 422 (validation error), Feishu 502 (original-text write failed), and requests with no AI stage at all (`AI_ENABLED=false`).
+
+### Privacy boundary
+
+- Original OCR text, condensed summary, and extracted fields are **stored in the db only, never logged** (logs carry ids/alias/timings/warning counts only).
+- The history API `GET /admin/ai/history` is gated by `X-Admin-Token` (i.e. `CONFIG_RELOAD_TOKEN`).
+- Secrets such as `AI_API_KEY` / `FEISHU_APP_SECRET` / `WEBHOOK_SHARED_TOKEN` are never written into history entries.
+- The db lives under `data/` (gitignored, including the `-wal`/`-shm` side files); real OCR text never enters git.
+
+### Viewing history
+
+- **Config page**: the "Request History" card on `/admin/ai` shows a newest-first mixed timeline with status chips (succeeded/failed/duplicate); expanding an entry reveals the failure reason, condensed summary, original OCR, extracted fields, and warnings.
+- **Command line**:
+
+```bash
+sqlite3 /data/history.db 'SELECT ts_iso, ai_status, error FROM history ORDER BY ts DESC LIMIT 20'
+```
+
+### Failure semantics and operations
+
+- History-store failures **never break the billing main path**: with a corrupted db, read-only directory, or incompatible schema version (`user_version` other than 0/1), the store degrades to a no-op (inserts/reads silently skipped + throttled error logs) and the webhook still returns 200.
+- **No delete/clear API** (by design, to avoid accidental wipes). To purge history, stop the service and delete the db file; the service recreates it on startup:
+
+```bash
+rm /data/history.db /data/history.db-wal /data/history.db-shm
+```
+
+- When backing up, copy the `-wal` / `-shm` side files together with the main file (or stop the service first and copy only the main file).

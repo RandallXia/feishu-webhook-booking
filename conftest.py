@@ -12,6 +12,7 @@ os.environ["FEISHU_ENV_FILE"] = ""
 os.environ["AI_ENABLED"] = "false"
 os.environ["AI_PROFILE_FILE"] = ""
 os.environ["AI_TIMEOUT_SECONDS"] = "20"
+os.environ["AI_HISTORY_DB_PATH"] = ""
 
 # Test env defaults (setdefault — won't override if already set)
 os.environ.setdefault("WEBHOOK_SHARED_TOKEN", "test-webhook-token")

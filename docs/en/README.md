@@ -46,6 +46,8 @@ When `AI_ENABLED=true`, the service takes over Feishu's "AI auto-fill" after wri
 
 See [ai-pipeline.md](ai-pipeline.md) for full config, migration checklist, TOML schema, and admin endpoints (Chinese: [../../docs/ai-pipeline.md](../ai-pipeline.md)).
 
+When `AI_HISTORY_DB_PATH` is set, every AI billing request (including failure reason, original OCR text, and the extracted summary) is persisted to a local SQLite database, viewable in the "Request History" card of `/admin/ai`. See the [AI pipeline docs](ai-pipeline.md).
+
 ## Runtime modes
 
 This repo supports two runtime modes:

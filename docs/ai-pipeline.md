@@ -535,3 +535,68 @@ enabled = false                  # 禁用此字段：AI 仍提取但不写入飞
 ```
 
 `enabled` 键缺省为 `true`，因此存量 TOML 配置（无此键）行为零变化——升级后无需迁移。配置界面保存时会经 `dump_profile` 序列化写出该键（无论 true/false 都显式写出，便于界面回显）。
+
+## 14. 请求历史 / Request History
+
+当配置了 `AI_HISTORY_DB_PATH` 时，服务会把每次 AI 记账请求持久化到本机 SQLite 库（Python 标准库 `sqlite3`，零新依赖），并可在配置页的「记账历史」卡片查看。数据库写入是原子操作，进程崩溃不会留下脏数据。
+
+When `AI_HISTORY_DB_PATH` is set, the service persists every AI billing request to a local SQLite database (Python's built-in `sqlite3` — zero new dependencies), viewable in the "Request History" card of the config page. Writes are atomic, so a process crash never leaves corrupted rows.
+
+### 配置与启用 / Configuration
+
+| 场景 | 行为 |
+|------|------|
+| 未设置 `AI_HISTORY_DB_PATH` | 历史功能完全关闭，零开销（不建文件、不写库），行为与历史版本一致 |
+| 设置了 `AI_HISTORY_DB_PATH` | 每个 AI 记账请求入库一条记录 |
+
+Docker 部署建议设为 `/data/history.db`（compose 已挂载可写卷 `./data:/data`）；本地直跑可设为任意可写路径，如 `./data/history.db`。
+
+### 记录字段 / Recorded fields
+
+每条记录包含 12 个字段：
+
+| 字段 | 说明 |
+|------|------|
+| `ts` / `ts_iso` | 记录时间（Unix 时间戳 / Asia/Shanghai ISO 字符串） |
+| `request_id` | 本次请求的唯一 id（与 webhook 日志可对账） |
+| `model` | AI 模型名（取自 `AI_MODEL`） |
+| `elapsed_ms` | AI 阶段总耗时（毫秒） |
+| `ai_status` | 结果状态：`succeeded` / `failed` / `duplicate` |
+| `error` | 失败原因（仅 failed 时非空；固定模板文案，不携带上游 payload） |
+| `bill_record_id` | 创建的账单明细记录 id（仅 succeeded 时非空） |
+| `original_text` | 原始 OCR 文本（仅入库，不进日志） |
+| `summary` | 精简原始数据（AI 提取的 summary，仅 succeeded 时非空） |
+| `extracted` | 提取字段（JSON：amount/category/flow_type/description） |
+| `warnings` | 警告列表（JSON 数组，如 fallback 命中提示） |
+
+### 记录范围 / What gets recorded
+
+- **记录**：AI 阶段结束的四条路径——`succeeded`（提取成功）、`failed`（提取/编码/建记录失败）、`duplicate`（去重命中）、registry 503（profile 注册表不可用，记为 `failed` + `error="profile registry unavailable"`）。
+- **不记录**：401（token 错误）、422（参数错误）、Feishu 502（原文写入失败）、以及 `AI_ENABLED=false` 时没有 AI 阶段的请求。
+
+### 隐私边界 / Privacy boundary
+
+- 原始 OCR 文本、精简原始数据、提取字段**只入库、不进日志**（日志仅记录 id/alias/耗时/警告条数）。
+- 历史查询 API `GET /admin/ai/history` 受 `X-Admin-Token` 门控（即 `CONFIG_RELOAD_TOKEN`）。
+- `AI_API_KEY` / `FEISHU_APP_SECRET` / `WEBHOOK_SHARED_TOKEN` 等密钥永不写入历史条目。
+- 库文件放在 `data/` 目录（已 gitignore，含 `-wal`/`-shm` 副文件），真实 OCR 文本永不进 git。
+
+### 查看历史 / Viewing history
+
+- **配置页**：`/admin/ai` 的「记账历史」卡片，按时间倒序混排展示，状态色芯片（成功/失败/重复），展开单条可看失败原因、精简原始数据、原始 OCR、提取字段与警告。
+- **命令行**：
+
+```bash
+sqlite3 /data/history.db 'SELECT ts_iso, ai_status, error FROM history ORDER BY ts DESC LIMIT 20'
+```
+
+### 失败语义与运维 / Failure semantics and operations
+
+- 历史库故障**绝不影响记账主链路**：库损坏、目录只读、schema 版本不兼容（`user_version` 非 0/1）时，store 自动降级为 no-op（写入/读取静默跳过 + 节流错误日志），webhook 照常 200。
+- **无删除/清空 API**（按设计，避免误删）。如需清理历史，直接停服后删除库文件即可，服务重启时会自动重建：
+
+```bash
+rm /data/history.db /data/history.db-wal /data/history.db-shm
+```
+
+- 备份时请连同 `-wal` / `-shm` 两个副文件一起拷贝（或先停服再只拷主文件）。
