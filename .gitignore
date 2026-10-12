@@ -18,6 +18,9 @@ runtime/*
 *.log
 logs/
 
+# Request history sqlite DB (+ -wal/-shm sidecars) — contains real OCR text, never commit
+data/
+
 # Local tools and assistant state / 本地工具与助手状态
 .claude/
 CLAUDE.md

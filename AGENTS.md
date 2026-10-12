@@ -23,6 +23,7 @@ feishu-webhook-booking/
 │   ├── field_codec.py    # ExtractionResult → Feishu field dicts (whitelist-guarded)
 │   ├── ai_profile.py     # TOML profile parser + hot-reloading registry + whitelist snapshot + validate_profile_candidate + build_field_prompts
 │   ├── pipeline.py       # AI orchestration: extract → encode → writeback → create (never raises)
+│   ├── history_store.py  # sqlite3 request history (AI_HISTORY_DB_PATH gated; degraded mode never raises)
 │   ├── toml_writer.py    # Deterministic TOML serialization (dump_targets/dump_profile) for config UI saves
 │   └── static/           # admin.html + admin.js + admin.css — AI config page served at /admin/ai
 ├── runtime/              # Runtime config mounted read-only in Docker; real files gitignored, only *.example committed
@@ -92,6 +93,7 @@ feishu-webhook-booking/
 | `list_tables` | method | app/feishu_client.py:153 | main.py (picker) | `GET /open-apis/bitable/v1/apps/{app_token}/tables` → table list |
 | `list_records` | method | app/feishu_client.py:198 | main.py (picker) | paginated `GET .../records` → items + has_more + page_token |
 | `env_file_path` | attr | app/config.py:85 (Settings) | main.py (config env routes) | `FEISHU_ENV_FILE` → `.env` fallback; None → PUT env 409 `ENV_FILE_NOT_FOUND` |
+| `HistoryStore` | class | app/history_store.py:81 | main.py | sqlite3 request history; WAL + thread lock; degraded mode on any failure |
 
 ## CONVENTIONS
 
@@ -109,7 +111,7 @@ feishu-webhook-booking/
 - NEVER let webhook request bodies carry Feishu credentials (`app_token`/`table_id`/`record_id`/`FEISHU_APP_SECRET`). Enforced by `WebhookRequest.model_config = ConfigDict(extra="forbid")`.
 - 账单字段提取逻辑只允许存在于 `app/ai_extractor.py` / `app/field_codec.py` / `app/ai_profile.py` / `app/pipeline.py`（AI_ENABLED 门控内）；webhook 请求契约不变（单点写入原始信息的语义保留）；不得在其它模块添加解析逻辑。Bill-field extraction logic is allowed ONLY in `app/ai_extractor.py` / `app/field_codec.py` / `app/ai_profile.py` / `app/pipeline.py` (gated by AI_ENABLED); the webhook request contract is unchanged (single-write 原始信息 semantics preserved); do not add parsing logic in other modules.
 - Do not commit real `runtime/feishu-webhook.env` / `runtime/feishu-targets.toml` / `runtime/ai-profile.toml` values.
-- Do not introduce DB/ORM/queue deps — state is in-memory (token cache + registry snapshot + AI dedup dict) by design.
+- Do not introduce DB/ORM/queue deps — state is in-memory (token cache + registry snapshot + AI dedup dict) by design. Exception: stdlib sqlite3 in app/history_store.py — single file, no ORM, request-history only; all store failures are swallowed (degraded no-op) so the webhook path is never affected.
 
 ## UNIQUE STYLES
 

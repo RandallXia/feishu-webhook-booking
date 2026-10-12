@@ -15,3 +15,5 @@ services:
       FEISHU_TARGETS_FILE: /runtime/feishu-targets.toml
     volumes:
       - ./runtime:/runtime:ro
+      # Request history sqlite DB (set AI_HISTORY_DB_PATH=/data/history.db to enable)
+      - ./data:/data

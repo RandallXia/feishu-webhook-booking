@@ -17,6 +17,7 @@
 | `ai_profile.py` | `AiProfile`, `parse_profile`, `parse_profile_text`, `validate_profile_candidate`, `build_field_prompts`, `AiProfileRegistry`, `AiProfileSnapshot`, `ProfileConfigError`, `AiProfileRegistryUnavailableError` | TOML profile parser + async hot-reload registry + pre-loaded whitelist snapshot + PUT-side validation |
 | `pipeline.py` | `AiPipeline`, `PipelineResult` | AI orchestration: extract → encode → writeback → create; `run()` never raises |
 | `toml_writer.py` | `dump_targets`, `dump_profile` | Deterministic TOML serialization for config UI saves (comment-loss expected; `.bak` pre-save) |
+| `history_store.py` | `HistoryStore`, `HistoryEntry` | sqlite3 request history store (AI_HISTORY_DB_PATH gated, degraded on failure) |
 | `static/admin.html` + `admin.js` + `admin.css` | — | AI config page served at `GET /admin/ai` (no auth on page; JS calls need `X-Admin-Token`) |
 
 ## Request Flow (ingest_ocr)
