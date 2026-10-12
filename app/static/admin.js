@@ -535,6 +535,146 @@
   });
 
   // ===========================================================================
+  // Request history (todo 4 — §history-section)
+  //
+  // Data source: GET /admin/ai/history (admin-token auth via api()). Every
+  // dynamic string (OCR text, summary, error, model, extracted values,
+  // warnings) is rendered through el()/textContent — innerHTML is NEVER used
+  // in this section (XSS rule; OCR text is arbitrary user content).
+  // ===========================================================================
+  var historySection = document.getElementById('history-section');
+  var historyList = document.getElementById('history-list');
+  var historyBanner = document.getElementById('history-banner');
+  var historyRefreshBtn = document.getElementById('history-refresh-btn');
+  var historyLimitInput = document.getElementById('history-limit-input');
+
+  function loadHistory() {
+    if (!historyList) return;
+    var n = parseInt(historyLimitInput.value, 10);
+    if (isNaN(n) || n < 1) n = 1;
+    if (n > 1000) n = 1000;
+    api('/admin/ai/history?limit=' + n)
+      .then(function(data) {
+        renderHistory(data.items);
+      })
+      .catch(function(err) {
+        // 404 = feature off: AI disabled or AI_HISTORY_DB_PATH unset. Show a
+        // plain placeholder instead of an error box — this is a config state,
+        // not a failure.
+        var code = err && err.body && err.body.detail && err.body.detail.error
+          ? err.body.detail.error.code : null;
+        if (err.status === 404 && (code === 'AI_DISABLED' || code === 'HISTORY_DISABLED')) {
+          while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
+          historyList.appendChild(el('p', { className: 'placeholder' },
+            '历史未启用 / History disabled — set AI_HISTORY_DB_PATH to enable'));
+          return;
+        }
+        showError(historyList, err.message);
+      });
+  }
+
+  function renderHistory(items) {
+    if (!historyList) return;
+    while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
+
+    if (!items || !items.length) {
+      historyList.appendChild(el('p', { className: 'placeholder' }, '暂无记录 / No records yet'));
+      return;
+    }
+
+    for (var i = 0; i < items.length; i++) {
+      historyList.appendChild(buildHistoryEntry(items[i]));
+    }
+  }
+
+  // One timeline card: meta row (status chip + time + model + elapsed + amount)
+  // above an expandable <details> with the full payload blocks.
+  function buildHistoryEntry(item) {
+    var entry = el('div', { className: 'history-entry' });
+
+    // Meta row — status chip reuses the global .status-tag palette.
+    var chipClass = 'status-info';
+    var chipText = item.ai_status || '';
+    if (item.ai_status === 'succeeded') { chipClass = 'status-ok'; chipText = '✓ 成功'; }
+    else if (item.ai_status === 'failed') { chipClass = 'status-err'; chipText = '✗ 失败'; }
+    else if (item.ai_status === 'duplicate') { chipClass = 'status-warn'; chipText = '⏭ 重复'; }
+
+    var meta = el('div', { className: 'history-meta' });
+    meta.appendChild(el('span', { className: 'status-tag ' + chipClass }, chipText));
+    meta.appendChild(el('span', null, item.ts_iso || ''));
+    meta.appendChild(el('span', null, item.model || '—'));
+    meta.appendChild(el('span', null,
+      (item.elapsed_ms != null ? item.elapsed_ms + ' ms' : '—')));
+    meta.appendChild(el('span', null,
+      (item.extracted && item.extracted.amount != null
+        ? '¥' + item.extracted.amount + (item.extracted.category ? ' ' + item.extracted.category : '')
+        : '—')));
+    entry.appendChild(meta);
+
+    // Expandable details — each block only when its data exists; a record with
+    // nothing to show gets an explicit "no details" placeholder.
+    var details = el('details', { className: 'history-details' });
+    details.appendChild(el('summary', null, '详情 / Details'));
+    var hasDetails = false;
+
+    if (item.error) {
+      hasDetails = true;
+      details.appendChild(el('div', { className: 'history-error' }, '失败原因: ' + item.error));
+    }
+
+    var extractedHasKeys = false;
+    if (item.extracted && typeof item.extracted === 'object') {
+      for (var k in item.extracted) {
+        if (Object.prototype.hasOwnProperty.call(item.extracted, k)) { extractedHasKeys = true; break; }
+      }
+    }
+    var warningsNonEmpty = !!(item.warnings && item.warnings.length);
+
+    hasDetails = appendHistoryBlock(details, hasDetails, '精简原始数据 / Summary', item.summary, null);
+    hasDetails = appendHistoryBlock(details, hasDetails, '原始 OCR / Original OCR', item.original_text, null);
+
+    if (extractedHasKeys) {
+      hasDetails = true;
+      appendHistoryBlockTitle(details, '提取字段 / Extracted');
+      for (var ek in item.extracted) {
+        if (!Object.prototype.hasOwnProperty.call(item.extracted, ek)) continue;
+        details.appendChild(el('div', { className: 'history-text' }, '  ↳ ' + ek + ': ' + item.extracted[ek]));
+      }
+    }
+
+    if (warningsNonEmpty) {
+      hasDetails = true;
+      appendHistoryBlockTitle(details, '警告 / Warnings');
+      for (var wi = 0; wi < item.warnings.length; wi++) {
+        details.appendChild(el('div', { className: 'history-text' }, '⚠ ' + item.warnings[wi]));
+      }
+    }
+
+    if (!hasDetails) {
+      details.appendChild(el('p', { className: 'placeholder' }, '无详情 / No details'));
+    }
+    entry.appendChild(details);
+    return entry;
+  }
+
+  // Append one titled pre-wrap block; returns the updated hasDetails flag so
+  // the caller can decide whether to render the "no details" placeholder.
+  function appendHistoryBlock(details, hasDetails, title, text, className) {
+    if (!text) return hasDetails;
+    appendHistoryBlockTitle(details, title);
+    details.appendChild(el('div', { className: className || 'history-text' }, text));
+    return true;
+  }
+
+  function appendHistoryBlockTitle(details, title) {
+    details.appendChild(el('span', { className: 'history-block-title' }, title));
+  }
+
+  if (historySection && historyRefreshBtn) {
+    historyRefreshBtn.addEventListener('click', loadHistory);
+  }
+
+  // ===========================================================================
   // Extract-table config UI (todo 9 — §extract-section)
   //
   // Data flow: GET /admin/config/targets → render alias cards → user edits →
@@ -2264,4 +2404,5 @@
   refreshExtractFields();
   loadBillProfile();
   loadEnv();
+  loadHistory();
 })();
