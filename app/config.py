@@ -83,6 +83,7 @@ class Settings:
     ai_profile_reload_interval_seconds: int
     ai_dedup_ttl_seconds: int
     ai_force_tool_call: bool
+    ai_history_db_path: Path | None
     env_file_path: Path | None
 
 
@@ -187,6 +188,7 @@ def get_settings() -> Settings:
         ai_profile_reload_interval_seconds=_int_env("AI_PROFILE_RELOAD_INTERVAL_SECONDS", 10),
         ai_dedup_ttl_seconds=_int_env("AI_DEDUP_TTL_SECONDS", 300),
         ai_force_tool_call=_bool_env("AI_FORCE_TOOL_CALL", True),
+        ai_history_db_path=_path_env("AI_HISTORY_DB_PATH"),
         env_file_path=_detect_env_file_path(),
     )
 
