@@ -108,7 +108,7 @@
 ## Final verification wave
 - [x] F1. Plan compliance audit：git diff 范围对照（field_codec/ai_profile/toml_writer/pipeline/main + 三静态文件 + 测试 + 文档）；requirements.txt 零 diff（✓ 通过；偏差记录：.omo/notepads 学习文件 134 行被纳入提交——内部工件非生产代码，非阻断，与上轮同类）
 - [x] F2. Code quality：全量 pytest 0 failed + py_compile + node --check + textContent 抽查（✓ 272 passed；COMPILE_OK；NODE_OK；innerHTML 18 处全部为迁移旧模式，diff 零新增；MUST-NOT 验证：ai_extractor.py 零变更、build_field_prompts 零变更）
-- [ ] F3. Real manual QA（可选人机抽查——写跳过语义已由 todo 5 集成测试覆盖）：Windows 目检映射表格渲染/开关灰显/折叠部署信息
+- [x] F3. Real manual QA（可选人机抽查——写跳过语义已由 todo 5 集成测试覆盖）：Windows 目检映射表格渲染/开关灰显/折叠部署信息（✓ 用户已在 Windows/Mac/NAS 三端实测：映射表格渲染/开关灰显/保存生效/折叠部署信息均验证；UI 细节问题已在 fix/admin-ux 分支修复）
 - [x] F4. Scope fidelity：grep 禁项零命中；WebhookRequest 不变；密钥零泄漏（✓ 全部通过：无禁依赖/无 CDN 外链/requirements 零 diff/WebhookRequest 类定义无 diff）
 
 ## Commit strategy
