@@ -33,3 +33,4 @@ memory/
 Thumbs.db
 .vscode/
 .idea/
+.playwright-mcp/
