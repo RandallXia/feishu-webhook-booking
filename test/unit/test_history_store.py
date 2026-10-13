@@ -10,6 +10,10 @@
 #     raising, insert/list_recent are no-ops, the file is never touched
 #   - Unwritable directory: constructor degrades without raising
 #   - Corrupt JSON columns: list_recent falls back to {} / [] without raising
+#   - v1 → v2 migration: pre-existing v1 db (no pending column) migrates in
+#     place, old rows read back with pending=False, user_version becomes 2
+#   - Pending lifecycle: insert_pending → finish_entry flips the SAME row to
+#     its terminal state; finish only touches rows still pending
 #   - Settings gate: AI_HISTORY_DB_PATH unset → None; set → Path
 #
 # All storage is real sqlite3 against tmp_path files. No mocks, no network.
@@ -92,6 +96,7 @@ def test_round_trip_preserves_entry(tmp_path):
             "summary": "星巴克 拿铁 ¥38",
             "extracted": {"amount": 42.0, "category": "餐饮", "flow_type": "支出"},
             "warnings": ["分类回退 → 其他"],
+            "pending": False,
         },
         {
             "ts": 1000.0,
@@ -106,6 +111,7 @@ def test_round_trip_preserves_entry(tmp_path):
             "summary": None,
             "extracted": {"amount": 38.0, "category": "餐饮", "note": "中文值"},
             "warnings": ["未知分类 → 回退 其他"],
+            "pending": False,
         },
     ]
 
@@ -225,7 +231,7 @@ def test_corrupt_json_columns_fall_back_without_raising(tmp_path):
     manual = sqlite3.connect(str(db_path))
     try:
         manual.execute(
-            "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 1000.0,
                 "1999-01-01T00:00:00+00:00",
@@ -239,6 +245,7 @@ def test_corrupt_json_columns_fall_back_without_raising(tmp_path):
                 None,
                 "not-json{{",
                 "also-bad[",
+                0,
             ),
         )
         manual.commit()
@@ -254,6 +261,209 @@ def test_corrupt_json_columns_fall_back_without_raising(tmp_path):
     good = rows[0]
     assert good["extracted"] == {"amount": 42.0, "category": "餐饮", "flow_type": "支出"}
     assert good["warnings"] == ["分类回退 → 其他"]
+
+
+# ─── v1 → v2 migration ──────────────────────────────────────────────────────
+
+
+def test_v1_database_migrates_in_place_and_old_rows_stay_readable(tmp_path):
+    """
+    GIVEN a hand-built v1 database (user_version=1, no pending column, one row
+         of legacy data inserted with the 13-column v1 layout)
+    WHEN a HistoryStore is constructed on it
+      AND a new pending entry is inserted and listed
+    THEN construction does not raise
+      AND the legacy row is still readable with pending == False (bool-ified)
+      AND the new row is inserted successfully with pending == True
+      AND PRAGMA user_version == 2
+    """
+    db_path = tmp_path / "history.db"
+    v1 = sqlite3.connect(str(db_path))
+    try:
+        v1.execute("PRAGMA user_version=1")
+        v1.execute(
+            "CREATE TABLE history ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "ts REAL NOT NULL,"
+            "ts_iso TEXT NOT NULL,"
+            "request_id TEXT NOT NULL,"
+            "model TEXT NOT NULL,"
+            "elapsed_ms INTEGER NOT NULL,"
+            "ai_status TEXT NOT NULL,"
+            "error TEXT,"
+            "bill_record_id TEXT,"
+            "original_text TEXT NOT NULL,"
+            "summary TEXT,"
+            "extracted TEXT NOT NULL,"
+            "warnings TEXT NOT NULL)"
+        )
+        v1.execute(
+            "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1000.0,
+                "2026-01-01T00:00:00+08:00",
+                "req_legacy_v1",
+                "claude-3-5-sonnet",
+                55,
+                "succeeded",
+                None,
+                None,
+                "旧版历史行",
+                None,
+                "{}",
+                "[]",
+            ),
+        )
+        v1.commit()
+    finally:
+        v1.close()
+
+    store = HistoryStore(db_path)
+
+    assert store._degraded is False
+    store.insert_pending(_make_entry(ts=2000.0, request_id="req_new_pending"))
+
+    rows = store.list_recent(10)
+    assert [row["request_id"] for row in rows] == ["req_new_pending", "req_legacy_v1"]
+    legacy = rows[1]
+    assert legacy["pending"] is False
+    assert legacy["original_text"] == "旧版历史行"
+    new_row = rows[0]
+    assert new_row["ai_status"] == "pending"
+    assert new_row["pending"] is True
+
+    check = sqlite3.connect(str(db_path))
+    try:
+        version = check.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        check.close()
+    assert version == 2
+
+
+# ─── Pending lifecycle: insert_pending / finish_entry ───────────────────────
+
+
+def test_insert_pending_then_finish_entry_updates_same_row_to_terminal(tmp_path):
+    """
+    GIVEN a working HistoryStore
+    WHEN insert_pending stores an entry and returns a rowid
+      AND the row is listed before finishing
+      AND finish_entry transitions that rowid to ai_status="succeeded"
+    THEN the pre-finish row shows ai_status == "pending" and pending == True
+      AND the post-finish row has the SAME id, now ai_status == "succeeded",
+          pending == False, elapsed_ms / ts refreshed to the finish values,
+          and extracted / warnings / summary / bill_record_id round-tripped
+    """
+    store = HistoryStore(tmp_path / "history.db")
+
+    row_id = store.insert_pending(
+        _make_entry(ts=1000.0, request_id="req_flow", ai_status="pending")
+    )
+
+    assert isinstance(row_id, int)
+
+    inflight = store.list_recent(10)
+    assert len(inflight) == 1
+    assert inflight[0]["ai_status"] == "pending"
+    assert inflight[0]["pending"] is True
+    assert inflight[0]["request_id"] == "req_flow"
+
+    store.finish_entry(
+        row_id,
+        ai_status="succeeded",
+        error=None,
+        bill_record_id="rec999",
+        summary="精简数据",
+        extracted={"amount": 42.0, "category": "餐饮"},
+        warnings=["分类回退 → 其他"],
+        elapsed_ms=777,
+        ts_iso="2026-08-28T13:00:00+08:00",
+    )
+
+    rows = store.list_recent(10)
+    assert len(rows) == 1
+    finished = rows[0]
+    assert finished["request_id"] == "req_flow"  # same row, not a second one
+    assert finished["ai_status"] == "succeeded"
+    assert finished["pending"] is False
+    assert finished["bill_record_id"] == "rec999"
+    assert finished["summary"] == "精简数据"
+    assert finished["extracted"] == {"amount": 42.0, "category": "餐饮"}
+    assert finished["warnings"] == ["分类回退 → 其他"]
+    assert finished["elapsed_ms"] == 777
+    assert finished["ts_iso"] == "2026-08-28T13:00:00+08:00"
+    assert finished["ts"] >= 1000.0  # ts refreshed to the completion moment
+
+
+def test_finish_entry_only_touches_rows_still_pending(tmp_path):
+    """
+    GIVEN a pending row that has already been finished once
+    WHEN finish_entry is called a second time on the same rowid
+       with different terminal data
+    THEN no error is raised
+      AND the row still holds the FIRST finish's terminal state
+      AND list_recent still returns exactly 1 row
+    """
+    store = HistoryStore(tmp_path / "history.db")
+    row_id = store.insert_pending(
+        _make_entry(ts=1000.0, request_id="req_guard", ai_status="pending")
+    )
+
+    store.finish_entry(
+        row_id,
+        ai_status="succeeded",
+        error=None,
+        bill_record_id="rec-first",
+        summary="first",
+        extracted={"amount": 1.0},
+        warnings=[],
+        elapsed_ms=100,
+        ts_iso="2026-08-28T12:00:00+08:00",
+    )
+    store.finish_entry(
+        row_id,
+        ai_status="failed",
+        error="second finish must not win",
+        bill_record_id="rec-second",
+        summary="second",
+        extracted={},
+        warnings=["late"],
+        elapsed_ms=999,
+        ts_iso="2026-08-28T14:00:00+08:00",
+    )
+
+    rows = store.list_recent(10)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["ai_status"] == "succeeded"
+    assert row["bill_record_id"] == "rec-first"
+    assert row["summary"] == "first"
+    assert row["elapsed_ms"] == 100
+    assert row["error"] is None
+
+
+def test_insert_pending_on_degraded_store_returns_none_without_raising(tmp_path):
+    """
+    GIVEN a HistoryStore degraded by a read-only directory
+    WHEN insert_pending is called
+    THEN it returns None without raising
+      AND finish_entry on a dummy rowid is a silent no-op
+    """
+    ro_dir = tmp_path / "ro"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o555)
+    try:
+        store = HistoryStore(ro_dir / "history.db")
+
+        assert store._degraded is True
+        row_id = store.insert_pending(_make_entry(ai_status="pending"))
+        assert row_id is None
+        store.finish_entry(1, ai_status="failed", error=None, bill_record_id=None,
+                           summary=None, extracted={}, warnings=[], elapsed_ms=0,
+                           ts_iso="2026-08-28T12:00:00+08:00")  # must not raise
+        assert store.list_recent(10) == []
+    finally:
+        ro_dir.chmod(0o755)
 
 
 # ─── Settings gate ──────────────────────────────────────────────────────────

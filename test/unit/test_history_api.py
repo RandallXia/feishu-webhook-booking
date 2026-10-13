@@ -3,6 +3,11 @@
 # Covers todo 3 of the admin-request-history plan:
 #   - Webhook recording hooks: succeeded / failed / duplicate / registry-503
 #     paths each persist exactly one HistoryEntry with the right fields
+#   - Pending lifecycle (schema v2): the webhook inserts a pending row BEFORE
+#     pipeline.run starts and finishes the SAME row on completion — while the
+#     pipeline is suspended, GET /admin/ai/history already shows the in-flight
+#     row; after it completes, the row reads back as terminal (succeeded,
+#     pending=False) — so a completed request never shows a pending chip
 #   - Contract regression: webhook success response NEVER gains top-level
 #     "error"/"summary" keys (history-only data stays out of the response)
 #   - GET /admin/ai/history: 401 / 404 AI_DISABLED / 404 HISTORY_DISABLED /
@@ -20,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -128,6 +134,8 @@ async def test_history_records_succeeded_pipeline_result(tmp_path):
       AND entry.original_text == the webhook payload text
       AND entry.elapsed_ms >= 0
       AND entry.summary / extracted / warnings round-trip through the db
+      AND entry.pending is False (the row was finished — a completed request
+          never shows a pending chip)
     """
     result = PipelineResult(
         ai_status="succeeded",
@@ -160,12 +168,83 @@ async def test_history_records_succeeded_pipeline_result(tmp_path):
     assert entry["summary"] == "麦当劳午餐"
     assert entry["extracted"]["amount"] == 42.0
     assert entry["warnings"] == ["flow fallback"]
+    assert entry["pending"] is False
     assert entry["request_id"]
     assert entry["ts_iso"]
 
 
-# ─── Recording path ②: pipeline failed (error preserved) ─────────────────────
+# ─── Pending visibility: in-flight row readable BEFORE pipeline completes ────
 
+
+async def test_inflight_request_visible_as_pending_then_finished(tmp_path):
+    """
+    GIVEN AI is on with a history db attached
+       AND the mocked pipeline.run suspends on an asyncio.Event (never set
+           until the test releases it)
+    WHEN POST /v1/webhook/ocr is dispatched (created as a task, not awaited)
+      AND the event loop yields (~50 ms) so the pending insert has committed
+      AND GET /admin/ai/history is called while the pipeline is still running
+    THEN the history response holds exactly 1 item with ai_status == "pending"
+       AND item.pending is True (the in-flight request is visible server-side)
+    WHEN the gate is released and the webhook task completes
+      AND GET /admin/ai/history is called again
+    THEN it still holds exactly 1 item (same row, finished — not re-inserted)
+       AND item.ai_status == "succeeded" and item.pending is False
+    """
+    result = PipelineResult(
+        ai_status="succeeded",
+        bill_record_id="rec-gate",
+        warnings=[],
+        extracted={"amount": 42.0},
+        dedup_hit=False,
+        summary="麦当劳午餐",
+    )
+    gate = asyncio.Event()
+
+    async def _gated_run(**kwargs):
+        await gate.wait()
+        return result
+
+    async with lifespan(app):
+        db_path = tmp_path / "h.db"
+        app.state.feishu_client = _mock_feishu_client()
+        app.state.settings = _history_settings(db_path)
+        app.state.history_store = HistoryStore(db_path)
+        app.state.ai_pipeline = AsyncMock()
+        app.state.ai_pipeline.run = AsyncMock(side_effect=_gated_run)
+        app.state.ai_registry = _mock_registry()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            webhook_task = asyncio.create_task(
+                client.post(
+                    "/v1/webhook/ocr",
+                    json=VALID_PAYLOAD,
+                    headers={"X-Webhook-Token": WEBHOOK_TOKEN},
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            inflight = await client.get("/admin/ai/history", headers=ADMIN_HEADERS)
+            assert inflight.status_code == 200
+            items = inflight.json()["items"]
+            assert len(items) == 1
+            assert items[0]["ai_status"] == "pending"
+            assert items[0]["pending"] is True
+
+            gate.set()
+            webhook_response = await webhook_task
+
+            assert webhook_response.status_code == 200
+            finished = await client.get("/admin/ai/history", headers=ADMIN_HEADERS)
+            assert finished.status_code == 200
+            items = finished.json()["items"]
+            assert len(items) == 1
+            assert items[0]["ai_status"] == "succeeded"
+            assert items[0]["pending"] is False
+            assert items[0]["bill_record_id"] == "rec-gate"
+
+
+# ─── Recording path ②: pipeline failed (error preserved) ─────────────────────
 
 async def test_history_records_failed_pipeline_result_with_error(tmp_path):
     """

@@ -8,8 +8,9 @@ requests. Design constraints:
   Construction failures (missing directory, unwritable file, foreign schema)
   flip the store into a degraded mode where insert/list_recent are no-ops.
 - **Schema version guard**: the file's `user_version` stamps the layout.
-  Version 0 → create table; 1 → reuse; anything else → degrade (a future or
-  unknown schema must not be silently rewritten).
+  Version 0 → create table; 1 → migrate (add the `pending` column, v2);
+  2 → reuse; anything else → degrade (a future or unknown schema must not be
+  silently rewritten).
 - **Lock discipline**: one connection opened with check_same_thread=False is
   shared across threads (callers hop threads via to_thread), so every
   operation runs under a threading.Lock.
@@ -29,7 +30,7 @@ from pathlib import Path
 
 logger = logging.getLogger("feishu_webhook_service.history")
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS history (
@@ -45,13 +46,19 @@ CREATE TABLE IF NOT EXISTS history (
     original_text TEXT NOT NULL,
     summary TEXT,
     extracted TEXT NOT NULL,
-    warnings TEXT NOT NULL
+    warnings TEXT NOT NULL,
+    pending INTEGER NOT NULL DEFAULT 0
 )
 """
 
+# v1 → v2: in-flight pending rows (webhook writes the row on entry, the AI
+# stage flips it to its terminal state on completion). One ALTER suffices —
+# migrated rows keep pending=0, which matches their terminal semantics.
+_MIGRATE_V1_TO_V2_SQL = "ALTER TABLE history ADD COLUMN pending INTEGER NOT NULL DEFAULT 0"
+
 _SELECT_COLUMNS = (
     "ts, ts_iso, request_id, model, elapsed_ms, ai_status, error, "
-    "bill_record_id, original_text, summary, extracted, warnings"
+    "bill_record_id, original_text, summary, extracted, warnings, pending"
 )
 
 # Error-log throttle: the first failure after a quiet period logs the full
@@ -76,6 +83,7 @@ class HistoryEntry:
     summary: str | None
     extracted: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    pending: bool = False
 
 
 class HistoryStore:
@@ -94,6 +102,10 @@ class HistoryStore:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 if version == 0:
                     conn.execute(_CREATE_TABLE_SQL)
+                    conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+                    conn.commit()
+                elif version == 1:
+                    conn.execute(_MIGRATE_V1_TO_V2_SQL)
                     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
                     conn.commit()
                 elif version != _SCHEMA_VERSION:
@@ -121,7 +133,7 @@ class HistoryStore:
         try:
             with self._lock:
                 self._conn.execute(
-                    "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         entry.ts,
                         entry.ts_iso,
@@ -135,11 +147,86 @@ class HistoryStore:
                         entry.summary,
                         json.dumps(entry.extracted, ensure_ascii=False),
                         json.dumps(entry.warnings, ensure_ascii=False),
+                        int(entry.pending),
                     ),
                 )
                 self._conn.commit()
         except Exception as exc:
             self._log_error_throttled("insert", exc)
+
+    def insert_pending(self, entry: HistoryEntry) -> int | None:
+        """Insert a row marked pending; return its rowid for the later finish,
+        or None when degraded/failed (caller then skips the finish step)."""
+        if self._degraded or self._conn is None:
+            return None
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        entry.ts,
+                        entry.ts_iso,
+                        entry.request_id,
+                        entry.model,
+                        entry.elapsed_ms,
+                        "pending",
+                        entry.error,
+                        entry.bill_record_id,
+                        entry.original_text,
+                        entry.summary,
+                        json.dumps(entry.extracted, ensure_ascii=False),
+                        json.dumps(entry.warnings, ensure_ascii=False),
+                        1,
+                    ),
+                )
+                self._conn.commit()
+                return int(cursor.lastrowid)
+        except Exception as exc:
+            self._log_error_throttled("insert_pending", exc)
+            return None
+
+    def finish_entry(
+        self,
+        row_id: int,
+        *,
+        ai_status: str,
+        error: str | None,
+        bill_record_id: str | None,
+        summary: str | None,
+        extracted: dict,
+        warnings: list[str],
+        elapsed_ms: int,
+        ts_iso: str,
+    ) -> None:
+        """UPDATE the pending row to its terminal state (never raises).
+
+        ts is refreshed to the completion moment inside the lock, so the row
+        floats to the top of the ts-ordered history once it finishes.
+        """
+        if self._degraded or self._conn is None:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE history SET ai_status=?, error=?, bill_record_id=?, "
+                    "summary=?, extracted=?, warnings=?, elapsed_ms=?, ts_iso=?, "
+                    "pending=0, ts=? WHERE id=? AND pending=1",
+                    (
+                        ai_status,
+                        error,
+                        bill_record_id,
+                        summary,
+                        json.dumps(extracted, ensure_ascii=False),
+                        json.dumps(warnings, ensure_ascii=False),
+                        elapsed_ms,
+                        ts_iso,
+                        time.time(),
+                        row_id,
+                    ),
+                )
+                self._conn.commit()
+        except Exception as exc:
+            self._log_error_throttled("finish_entry", exc)
 
     def list_recent(self, limit: int) -> list[dict]:
         """Newest-first rows as dicts; degraded mode and failures return []."""
@@ -172,6 +259,7 @@ class HistoryStore:
             summary,
             extracted_json,
             warnings_json,
+            pending,
         ) = row
 
         # Corrupt JSON columns must not break reads — fall back to empty
@@ -198,6 +286,7 @@ class HistoryStore:
             "summary": summary,
             "extracted": extracted,
             "warnings": warnings,
+            "pending": bool(pending),
         }
 
     @staticmethod

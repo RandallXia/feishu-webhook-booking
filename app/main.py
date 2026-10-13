@@ -329,6 +329,26 @@ async def ingest_ocr(
     ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None)
     if settings.ai_enabled and ai_pipeline is not None and ai_registry is not None:
         stage_start = time.monotonic()
+        history_store = getattr(request.app.state, "history_store", None)
+
+        def _pending_entry() -> HistoryEntry:
+            # Written the moment the AI stage starts so the history API can
+            # already show an in-flight row (the pipeline can take seconds).
+            return HistoryEntry(
+                ts=time.time(),
+                ts_iso=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds"),
+                request_id=request_id,
+                model=settings.ai_model or "",
+                elapsed_ms=0,
+                ai_status="pending",
+                error=None,
+                bill_record_id=None,
+                original_text=original_text,
+                summary=None,
+                extracted={},
+                warnings=[],
+                pending=True,
+            )
 
         async def _record_history(
             ai_status: str,
@@ -339,8 +359,7 @@ async def ingest_ocr(
             extracted: dict | None = None,
             warnings: list[str] | None = None,
         ) -> None:
-            store = getattr(request.app.state, "history_store", None)
-            if store is None:
+            if history_store is None:
                 return
             entry = HistoryEntry(
                 ts=time.time(),
@@ -356,14 +375,46 @@ async def ingest_ocr(
                 extracted=extracted or {},
                 warnings=warnings or [],
             )
-            await asyncio.to_thread(store.insert, entry)
+            await asyncio.to_thread(history_store.insert, entry)
+
+        async def _finish_history(
+            row_id: int,
+            ai_status: str,
+            *,
+            error: str | None = None,
+            bill_record_id: str | None = None,
+            summary: str | None = None,
+            extracted: dict | None = None,
+            warnings: list[str] | None = None,
+        ) -> None:
+            await asyncio.to_thread(
+                history_store.finish_entry,
+                row_id,
+                ai_status=ai_status,
+                error=error,
+                bill_record_id=bill_record_id,
+                summary=summary,
+                extracted=extracted or {},
+                warnings=warnings or [],
+                elapsed_ms=int((time.monotonic() - stage_start) * 1000),
+                ts_iso=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds"),
+            )
+
+        # None when history is off or the pending write failed — every later
+        # recording point then falls back to the one-shot _record_history.
+        history_row_id: int | None = None
+        if history_store is not None:
+            history_row_id = await asyncio.to_thread(history_store.insert_pending, _pending_entry())
 
         try:
             await ai_registry.maybe_reload()
             snapshot = ai_registry.get_snapshot()
         except AiProfileRegistryUnavailableError as exc:
             logger.exception("ai profile registry unavailable request_id=%s", request_id)
-            await _record_history("failed", error="profile registry unavailable")
+            if history_row_id is not None:
+                await _finish_history(history_row_id, "failed", error="profile registry unavailable")
+            else:
+                await _record_history("failed", error="profile registry unavailable")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -392,14 +443,25 @@ async def ingest_ocr(
             ai_record_id or "",
             len(result.warnings),
         )
-        await _record_history(
-            result.ai_status,
-            error=result.error,
-            bill_record_id=result.bill_record_id,
-            summary=result.summary,
-            extracted=result.extracted or None,
-            warnings=result.warnings or None,
-        )
+        if history_row_id is not None:
+            await _finish_history(
+                history_row_id,
+                result.ai_status,
+                error=result.error,
+                bill_record_id=result.bill_record_id,
+                summary=result.summary,
+                extracted=result.extracted or None,
+                warnings=result.warnings or None,
+            )
+        else:
+            await _record_history(
+                result.ai_status,
+                error=result.error,
+                bill_record_id=result.bill_record_id,
+                summary=result.summary,
+                extracted=result.extracted or None,
+                warnings=result.warnings or None,
+            )
 
     return WebhookSuccessResponse(
         request_id=request_id,
