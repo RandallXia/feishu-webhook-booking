@@ -94,3 +94,21 @@ _Auto-scaffolded by /start-work. Append new entries below - never overwrite._
 - **Toggle wiring must precede the first-run gate**: the IIFE `return`s early in setup mode (no token), so langToggleBtn.addEventListener lives right after applyStaticI18n() at the top. Handler guards loadHistory()/refreshStatus() behind `if (getToken())` — api() 401 path would otherwise flash "令牌不正确" on the setup card during a language switch.
 - **Anti-flash = head inline script + IIFE-first applyStaticI18n()**: head script only toggles html.lang-en class (cheap, pre-paint); full text painting happens in the IIFE's first sync pass BEFORE DOM refs. Script is at end of body (DOM ready) so querySelectorAll finds everything.
 - en dict had a duplicate `'ocr.flowAiFailed'` + `'extract.fieldFromExtract'` key (harmless, later wins) — left as-is; JS last-wins semantics identical to a single entry.
+
+## Pending-row backend (schema v2) — 2026-10-13
+- v1→v2 迁移一条 `ALTER TABLE history ADD COLUMN pending INTEGER NOT NULL DEFAULT 0` 即可：旧行 pending=0 恰好等于终态语义，无需复制表。迁移实测：手建 v1 库（user_version=1 + 13 列旧数据）→ 构造后旧行可读 pending=False、新 pending 行可插、user_version==2。
+- pending 行流转：`insert_pending` 强制 ai_status="pending"/pending=1 并在锁内取 `cursor.lastrowid` 返回；`finish_entry` 的 UPDATE 带 `WHERE id=? AND pending=1` 防竞态（重复 finish 不覆盖第一次终态），且 `ts` 在 finish 时刷新为完成时刻 → 行自然上浮到倒序列表顶部。
+- main.py 降级链：`history_row_id is None`（history off 或 insert_pending 失败）→ 回退旧 `_record_history` 一次性 insert；rowid 非 None → `finish_entry` 更新同一行。503 分支同样双路，保住「registry 不可用必有记录」语义。401/422/502 路径零改动。
+- 测试技巧：pipeline.run「挂起」用 `AsyncMock(side_effect=async def _gated_run(**kw): await gate.wait(); return result)` + `asyncio.create_task(client.post(...))` + `asyncio.sleep(0.05)` → GET history 断言 pending 行 → `gate.set()` → await 任务 → 再 GET 断言终态。注意所有 client.get 必须留在 `async with client` 块内（client 关闭后请求会 RuntimeError）。
+- 存量测试两处 v2 触点：round-trip 全字段相等断言需加 `"pending": False` 键；手工 `INSERT INTO history VALUES (...)` 的占位符从 13 → 14 个。
+- 全量 344 passed（基线 339 + 新增 5）。提交 9a74b3c。
+
+## Pinned-mode collapse + pending rows in admin UI (2026-10-13)
+- **双变量模型是关键**：`historyPinned`（observer 维护的物理吸顶态）与 `historyUserExpanded`（用户覆盖）正交，折叠条件 = `historyPinned && !historyUserExpanded`。observer 永远只管物理态、永远重写 historyPinned，用户「展开」后滚动不会被打回折叠态；「收起」链接只清 user 标志，物理仍吸顶时立即回到折叠。
+- **Sentinel 方向判定**：`!entries[i].isIntersecting && entries[i].boundingClientRect.top < 0` —— sentinel 在卡片上方零高度，滚出视口顶部=吸顶。`bottom < 0`（页面回滚到顶）时 sentinel 从顶部重新进入视口，isIntersecting=true → 自动解除折叠，无需额外分支。
+- **renderHistoryCountsBar 不清整个 bar**：只 remove/reinsert `.counts-chips` 容器，`#history-expand-btn` 是 bar 的静态子节点不受影响（任务书给的 while(firstChild) 清空方案会删掉按钮的事件绑定节点）。
+- **收起链接必须 JS 动态渲染**（renderHistory/showHistoryPending 首行 appendHistoryCollapseLink）：#history-list 每次清空重绘，静态放 HTML 顶部会被删掉。绑定 click 在 append 时做一次即可，链接随列表重建、无泄漏。
+- **i18n key 命名避坑**：chipShort 值（'✓ 成功'）已含符号，计数拼接用 `t(key) + ' ' + count` 即可；`history.chipPending`（'⏳ 解析中'）已存在，勿重复定义（test_admin_i18n 的 parity 门只查 key 集合，重复定义会静默 last-wins）。
+- 45vh 删除安全的前提：折叠态列表 display:none，展开态卡片回文档流（页面滚动而非卡内滚动）。CSS 里留了注释说明这个耦合，别再单独加回 max-height。
+- 测试计数 344 → 348（新增 4：collapsed-bar/sentinel 存在性、pinned 引擎、pending chip 切片、i18n 新 key 成对）。buildHistoryEntry 切片锚点：`function buildHistoryEntry(` → `function appendHistoryBlock(`。
+- 提交 99ebf2d。
