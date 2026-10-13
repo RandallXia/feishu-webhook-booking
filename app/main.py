@@ -126,11 +126,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Feishu Webhook Service", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("feishu_webhook_service")
 
+# Cache-busting token for the admin page's static assets. Browsers may keep a
+# stale admin.js/admin.css (heuristic caching on the StaticFiles mount), which
+# pairs an old script with a fresh HTML shell and breaks the page (observed:
+# history card stuck on "加载中", mixed bilingual strings). Bumping this value
+# changes the asset URLs, forcing every browser to re-fetch after a deploy.
+_STATIC_ASSET_VERSION = "2026-10-13-1"
+
 
 @app.get("/admin/ai")
 async def admin_ai_page() -> HTMLResponse:
     html_path = Path(__file__).parent / "static" / "admin.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    html = html.replace(
+        "/admin/ai/assets/admin.js",
+        f"/admin/ai/assets/admin.js?v={_STATIC_ASSET_VERSION}",
+    ).replace(
+        "/admin/ai/assets/admin.css",
+        f"/admin/ai/assets/admin.css?v={_STATIC_ASSET_VERSION}",
+    )
+    return HTMLResponse(html)
 
 
 # Static assets for the admin page (admin.css / admin.js). Mounted at a

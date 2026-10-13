@@ -82,9 +82,10 @@ async def test_admin_html_references_static_assets():
             response = await client.get("/admin/ai")
 
     body = response.text
-    # Asset link contract — the page must load the split css + js.
-    assert "/admin/ai/assets/admin.css" in body
-    assert "/admin/ai/assets/admin.js" in body
+    # Asset link contract — versioned URLs force browsers past any cached
+    # stale script after each deploy.
+    assert "/admin/ai/assets/admin.css?v=" in body
+    assert "/admin/ai/assets/admin.js?v=" in body
     # New skeleton section ids (todo 8).
     assert 'id="status-bar"' in body
     assert 'id="ai-connection-section"' in body
@@ -94,6 +95,23 @@ async def test_admin_html_references_static_assets():
     # summary is the sole target=extract field, so it is configured against the
     # extract-table field list, not the bill mapping table.
     assert 'id="summary-field-select"' in body
+
+
+async def test_admin_asset_version_query_is_url_safe():
+    """
+    GIVEN the cache-busting version constant in app.main
+    WHEN GET /admin/ai is requested
+    THEN the version query value contains only URL-safe characters (digits,
+       letters, dot, dash, underscore) — a malformed version would corrupt
+       the asset URLs and 404 every static asset
+    """
+    import re as _re
+
+    from app.main import _STATIC_ASSET_VERSION
+
+    assert _re.fullmatch(r"[0-9A-Za-z._-]+", _STATIC_ASSET_VERSION), (
+        f"unURL-safe asset version: {_STATIC_ASSET_VERSION!r}"
+    )
 
 
 async def test_admin_css_asset_served_200():
