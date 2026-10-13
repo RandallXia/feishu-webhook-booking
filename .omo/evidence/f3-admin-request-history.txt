@@ -1,0 +1,124 @@
+F3: Real manual QA — /admin/ai Request History card (记账历史)
+================================================================
+Date: 2026-10-12
+Executor: Sisyphus-Junior (agent-run browser QA on behalf of user; user may re-verify on a real device later)
+Plan: .omo/plans/admin-request-history.md (F3)
+Scope: real-browser load of /admin/ai; verify history card mixed timeline,
+status-chip coloring, meta-row width behavior, expandable details block.
+
+VERDICT: APPROVE
+
+----------------------------------------------------------------
+1. Environment / 环境
+----------------------------------------------------------------
+- Server: `.venv/bin/python -m uvicorn app.main:app` from repo root.
+- Mode: AI off (AI_ENABLED=false), all-dummy Feishu creds, no real Feishu API touched.
+  WEBHOOK_SHARED_TOKEN=test-wh-token FEISHU_APP_ID=dummy FEISHU_APP_SECRET=dummy
+  FEISHU_APP_TOKEN=bascn_dummy FEISHU_TABLE_ID=tbldummy FEISHU_RECORD_ID=recdummy
+  CONFIG_RELOAD_TOKEN=test-admin-token AI_ENABLED=false
+- Port: 23983 (final run). Note: first attempt used 23981 (per task sheet) but was
+  abandoned — a parallel F2/F4 task shares the same browser profile and the same
+  origin (127.0.0.1:23981) localStorage; switching to 23983 gives an isolated
+  origin for token storage. No product/test files were modified for this.
+- Process: started detached (python subprocess, start_new_session=True) because the
+  tool shell reclaims plain `&` background jobs. PID recorded and killed at the end.
+- Browser: Playwright MCP (Chromium), viewport 960x800.
+- Page loaded: http://127.0.0.1:23983/admin/ai ("AI 配置管理 / AI Config Admin").
+
+----------------------------------------------------------------
+2. Steps & Results / 步骤与结果
+----------------------------------------------------------------
+STEP 0 — Health
+  curl /health → HTTP 200 {"success":true,"status":"ok","config_valid":true,...} ✅
+
+STEP 1 — First-run gate (no token)
+  - setup-card displayed (block), all .card sections hidden ✅
+  - Filled #setup-token-input = test-admin-token, clicked #setup-token-btn.
+  - Result: token persisted (localStorage key `admin_ai_token`), setup-card hidden,
+    full admin page rendered after the internal location.reload(). ✅
+  (First attempt on port 23981 appeared to "lose" the token; root cause was the
+  init 401 path in api() clearing storage — see Console section. On the clean
+  origin the setup flow worked exactly as documented.)
+
+STEP 2 — State 1: degraded state (AI off, real 404) / 状态一：降级态
+  - Init loadHistory() → GET /admin/ai/history?limit=200 → real HTTP 404
+    body: {"detail":{"error":{"code":"AI_DISABLED","message":"AI stage is disabled"}}}
+  - loadHistory catch branch rendered placeholder, exact text:
+    「历史未启用 / History disabled — set AI_HISTORY_DB_PATH to enable」 ✅
+  - No JS exception; network 404 logged by the browser console is the expected
+    resource-error line, not an uncaught error. ✅
+  - Screenshot: .omo/evidence/f3-history-disabled.png
+    (visual check confirms card + placeholder + refresh/limit controls; no entries)
+
+STEP 3 — State 2: rendered state via fetch patch + refresh click / 状态二：渲染态
+  - Injected window.fetch monkey-patch (page context) returning the 3-item fixture
+    from the task sheet verbatim (succeeded / failed / duplicate; multi-line OCR
+    with emoji ☕; warnings with fallback text; amounts 42.0 / 9.9).
+  - Clicked #history-refresh-btn (bound to closure loadHistory) → loadHistory
+    re-ran, hit the patched fetch → renderHistory() built 3 entries. ✅
+
+STEP 4 — Assertions (browser_evaluate) / 断言
+  a) Entry count: document.querySelectorAll('.history-entry').length === 3 ✅
+  b) Timeline order (newest first): 18:03 duplicate → 18:02 failed → 18:01
+     succeeded ✅
+  c) Status chips — each modifier class appears exactly once, correct mapping
+     (buildHistoryEntry admin.js:598-600):
+       [status-tag, status-warn] "⏭ 重复"    (duplicate)  ✅
+       [status-tag, status-err]  "✗ 失败"    (failed)     ✅
+       [status-tag, status-ok]   "✓ 成功"    (succeeded)  ✅
+  d) Meta rows: 3 × .history-meta present; each renders chip + ts_iso + model +
+     elapsed_ms + amount/category (failed entry shows "—" for amount) ✅
+  e) Width behavior at 960px viewport: for all 3 rows,
+       meta bounding width = card width = 857px; scrollWidth == clientWidth == 857
+       → anyOverflow = false (no horizontal overflow / no clipped meta content) ✅
+  f) Expandable details: 3 × details.history-details present, all collapsed in
+     collapsed screenshot ✅
+  g) Expanded state: clicked entry #2 (failed) summary → details.open === true ✅
+       - .history-error block (red): 「失败原因: extract request: upstream timeout after 20s」 ✅
+       - .history-text block preserves multi-line OCR verbatim:
+           京东订单截图 / 第二行 含中文与 Emoji ☕ / 第三行  (emoji renders, \n kept) ✅
+  h) Console: zero JS exceptions (no uncaught errors / pageerror). Only 3
+     network resource-error lines on this origin, all expected AI-off 404s:
+       404 /admin/ai/profile, 404 /admin/config/profile, 404 /admin/ai/history?limit=200
+     (per task sheet these are expected and not REJECT items.)
+     Saved: .omo/evidence/f3-console-errors.txt
+     Note: that file also contains 7 lines from the ABANDONED 23981 origin
+     (401s while the parallel-task origin shared the page) — not part of this
+     run's verdict surface; the 23983-origin lines above are the run's console.
+
+STEP 5 — Screenshots / 截图 (all visually inspected, not just captured)
+  - .omo/evidence/f3-history-disabled.png  State 1: degraded placeholder
+  - .omo/evidence/f3-history-collapsed.png State 2: 3 entries collapsed,
+      three chip colors visible (orange/red/green), meta rows on one line
+  - .omo/evidence/f3-history-expanded.png  State 2: failed entry expanded,
+      red error text + multi-line OCR block with ☕
+
+STEP 6 — Cleanup / 清理
+  - uvicorn PID 23921 killed → "confirmed exited" via ps; port 23983 free (lsof). ✅
+  - No background processes left. ✅
+
+----------------------------------------------------------------
+3. Verdict rationale / 结论依据
+----------------------------------------------------------------
+- Real product code exercised end-to-end in a real Chromium browser: setup gate,
+  token storage, 404-degraded rendering (real server 404, not mocked), fixture
+  render through the actual loadHistory/renderHistory/buildHistoryEntry path
+  (fetch patch only substituted the HTTP response body).
+- All 8 assertion groups passed; zero JS exceptions; 3 evidence screenshots
+  visually verified (chips, timeline order, one-line meta, expand/collapse,
+  CJK + emoji rendering correct, no clipping).
+- Limitations: rendered state used a patched fetch (MCP cannot intercept routes);
+  server-side rendering of real DB rows is covered by unit/integration tests
+  (test_history_api.py). The AI-off 404 path was validated against the REAL
+  backend, so the only mocked surface is the happy-path response body.
+
+----------------------------------------------------------------
+4. Reproduction runbook (optional user re-check on real machine) / 复核手册
+----------------------------------------------------------------
+  1) export the dummy env above; start uvicorn on any free port
+  2) open http://127.0.0.1:<port>/admin/ai → expect disabled placeholder
+  3) set AI_ENABLED=true + AI_HISTORY_DB_PATH=<writable path>, restart, post a
+     webhook OCR request → refresh history card → real rows render
+  4) confirm chips/order/width/expand behavior as above
+================================================================
+END OF EVIDENCE

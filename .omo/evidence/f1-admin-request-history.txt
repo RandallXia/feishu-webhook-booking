@@ -1,0 +1,160 @@
+=== F1: Plan Compliance Audit ===
+Date: 2026-10-12
+Audit scope: 1544fb2..HEAD (6 commits: 4de3983 c6c5f89 f36f1d6 0acbb40 f3b2f99 4784f68)
+Files changed: 22 files, +2074 / -1
+
+================================================================================
+MUST-HAVE ITEM-BY-ITEM CHECK
+================================================================================
+
+1. [✓] history_store.py 新模块
+   File: app/history_store.py (213 lines, new)
+   Exports: HistoryEntry (frozen slots dataclass), HistoryStore (class)
+   - sqlite3.connect with check_same_thread=False, PRAGMA journal_mode=WAL, PRAGMA busy_timeout=2000 ✅
+   - CREATE TABLE IF NOT EXISTS history (13 columns matching HistoryEntry) + PRAGMA user_version=1 ✅
+   - thread_lock serialisation ✅
+   - Schema version guard: 0→create, 1→reuse, other→degraded no-op + error log ✅
+   - insert(): Exception swallowed, throttled error log (60s interval) ✅
+   - list_recent(): ORDER BY ts DESC, id DESC LIMIT ? ✅
+   - Degraded mode: parent dir creation failure / readonly / incompatible schema → no-op ✅
+   - HistoryEntry: 12 fields (ts/ts_iso/request_id/model/elapsed_ms/ai_status/error/bill_record_id/original_text/summary/extracted/warnings) ✅
+
+2. [✓] Settings 扩展 + .env.example 注释
+   app/config.py: +2 lines
+   - Settings.ai_history_db_path: Path | None (line 85) ✅
+   - _path_env("AI_HISTORY_DB_PATH") in get_settings() (line 191) ✅
+   .env.example: +4 lines
+   - Comment block with Docker suggested value /data/history.db ✅
+
+3. [✓] PipelineResult 7 字段 + 6 路径填充
+   app/pipeline.py: +8 lines
+   - summary: str | None = None + error: str | None = None (frozen slots, defaults) ✅
+   Paths filled:
+     a) Extract fail (:188)   → error="extract {exc.stage}: {exc}" ✅
+     b) Encode fail (:214)    → error="encode: {exc}" ✅
+     c) Create fail (:275)    → error="bill create {exc.stage}: {exc}" ✅
+     d) Top-level except (:129)→ error="internal error" (no str(exc)) ✅
+     e) All-disabled (:247)   → summary=extraction.summary ✅
+     f) Final success (:294)  → summary=extraction.summary ✅
+     g) Duplicate path (:151) → unfilled ✅
+
+4. [✓] main.py: lifespan 构建 + ingest_ocr 钩子 + GET /admin/ai/history
+   app/main.py: +95 lines
+   - lifespan: HistoryStore built when ai_history_db_path is not None (else None) ✅
+   - ingest_ocr(): stage_start=time.monotonic() before maybe_reload() ✅
+   - _record_history() inner function: constructs HistoryEntry, calls await asyncio.to_thread(store.insert, entry) ✅
+   - 2 record points: registry 503 (before raise, error="profile registry unavailable") + after pipeline.run ✅
+   - ts_iso=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds") ✅
+   - GET /admin/ai/history: _require_admin_auth mirror, limit=Query(default=200,ge=1,le=1000) ✅
+   - AI_DISABLED 404 + HISTORY_DISABLED 404 error codes ✅
+   - list_recent via asyncio.to_thread ✅
+
+5. [✓] 前端三文件 + test_admin_history_ui
+   app/static/admin.html: +14 lines
+   - history-section card with id elements: history-section, history-banner, history-refresh-btn, history-limit-input, history-list ✅
+   app/static/admin.js: +141 lines
+   - function loadHistory() declared ✅
+   - function renderHistory(items) declared ✅
+   - buildHistoryEntry() with status chips (status-ok/status-err/status-warn) ✅
+   - Expandable details with error/summary/original_text/extracted/warnings ✅
+   - All dynamic text via el()/textContent ✅
+   - init section loadHistory() + refresh button click handler ✅
+   app/static/admin.css: +20 lines
+   - .history-meta (flex, wrap, nowrap children) ✅
+   - .history-details (border, border-radius) ✅
+   - .history-error (color: #c62828) ✅
+   - .history-entry (border-bottom) ✅
+   - .history-text (pre-wrap, word-break) ✅
+   test/unit/test_admin_history_ui.py: 144 lines ✅
+
+6. [✓] compose data 卷 + .gitignore data/
+   docker-compose.yml: +2 lines
+   - - ./data:/data with comment explaining AI_HISTORY_DB_PATH=/data/history.db ✅
+   .gitignore: +3 lines
+   - data/ block with comment about -wal/-shm, real OCR text ✅
+
+7. [✓] AGENTS.md 修订
+   Root AGENTS.md: +4 / -1
+   - ANTI-PATTERNS: "Do not introduce DB/ORM/queue deps" → narrowed exception for stdlib sqlite3 ✅
+   - STRUCTURE: history_store.py line added ✅
+   - CODE MAP: HistoryStore entry added ✅
+   app/AGENTS.md: +1
+   - WHERE TO LOOK: history_store.py row added ✅
+
+8. [✓] conftest AI_HISTORY_DB_PATH + test_history_integration
+   conftest.py: +1 line
+   - os.environ["AI_HISTORY_DB_PATH"] = "" (mirror of existing pin pattern) ✅
+   test/unit/test_history_integration.py: 371 lines ✅
+
+9. [✓] 双语文档 docs/ai-pipeline.md + README
+   docs/ai-pipeline.md: +65 lines → ## 14. 请求历史 / Request History ✅
+   docs/en/ai-pipeline.md: +63 lines → ## 14. Request History ✅
+   - zh sections: 15 total `## ` headers
+   - en sections: 15 total `## ` headers → MATCH ✅
+   README.md: +4 lines (bilingual paragraph about AI_HISTORY_DB_PATH / 记账历史) ✅
+   docs/en/README.md: +2 lines (English paragraph about AI_HISTORY_DB_PATH / Request History) ✅
+
+   DEVIATION (NOT BLOCKING): Section number is 14, not 13 as plan tentatively states.
+   Reason: Section 13 was already occupied by "字段启用开关 / Field enable toggle".
+   The plan itself notes "编号顺延" (line 151: "编号顺延"). This is a REASONABLE DEVIATION.
+
+   DEVIATION (NOT BLOCKING): zh README uses "记账历史", not "请求历史".
+   Reason: UI card title is "记账历史 / Request History". Using the same label
+   keeps docs consistent with the UI. en README correctly uses "Request History".
+   This is a REASONABLE DEVIATION.
+
+10. [✓] 测试四件套
+    test/unit/test_history_store.py:    292 lines ✅
+    test/unit/test_history_api.py:      467 lines ✅
+    test/unit/test_admin_history_ui.py: 144 lines ✅
+    test/unit/test_history_integration.py: 371 lines ✅
+    test/unit/test_pipeline.py:         159 lines (PipelineResult regression) ✅
+
+================================================================================
+MUST-NOT-HAVE GUARDRAIL VIOLATION CHECK
+================================================================================
+
+1. [✓] WebhookRequest / WebhookSuccessResponse: ZERO changes in diff
+   Verified: git diff 1544fb2..HEAD -- app/main.py | grep WebhookRequest/WebhookSuccessResponse → NO MATCH
+
+2. [✓] No third-party deps: sqlite3 = stdlib. requirements*.txt: ZERO diff
+
+3. [✓] History store failures never raise to webhook: all insert/list paths wrapped in
+   try/except within HistoryStore's threading.Lock block → swallowed + throttled logs
+
+4. [✓] No original_text in logs outside pipeline.py:
+   - app/main.py diff: no logger line referencing original_text ✅
+   - app/history_store.py diff: no logger line referencing original_text ✅
+   - The plan's pipeline.py log lines are pre-existing and unchanged
+
+5. [✓] No secrets in history entries:
+   - HistoryEntry fields are: ts, ts_iso, request_id, model, elapsed_ms, ai_status, error,
+     bill_record_id, original_text, summary, extracted, warnings
+   - None of: AI_API_KEY, FEISHU_APP_SECRET, WEBHOOK_SHARED_TOKEN, CONFIG_RELOAD_TOKEN ✅
+
+6. [✓] No 401/422 paths recorded: Only AI stage paths get _record_history() ✅
+
+7. [✓] No pagination/auto-refresh/delete API: GET /admin/ai/history only has `limit` param ✅
+
+8. [✓] No frontend framework: pure vanilla HTML/CSS/JS ✅
+
+9. [✓] No innerHTML in history section (executable code):
+   - Verified: the only "innerHTML" occurrence in the history section of admin.js
+     is inside a comment: "innerHTML is NEVER used"
+   - All dynamic text rendered via el()/textContent ✅
+
+10. [✓] data/ in .gitignore: verified via .gitignore diff ✅
+
+11. [✓] Existing routes/cards/test assertions zero regression:
+    - No changes to existing route signatures or card structures observed in diffs
+    - Test files are additive only (no deletion of existing assertions in conftest)
+
+================================================================================
+VERDICT: APPROVE
+================================================================================
+
+All 10 Must-have items are implemented and verified against the plan spec.
+0 Must-NOT-have guardrail violations found.
+2 deviations noted — both are reasonable and non-blocking:
+  - Docs section number 14 vs tentative 13 (13 was occupied by "字段启用开关"; plan line 151 explicitly authorizes "编号顺延"). APPROVED.
+  - zh README uses "记账历史" instead of literal "请求历史": consistent with UI card title "记账历史 / Request History" per plan line 51. en side uses correct "Request History". APPROVED.

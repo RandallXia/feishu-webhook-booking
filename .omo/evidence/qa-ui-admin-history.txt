@@ -1,0 +1,191 @@
+================================================================================
+QA EVIDENCE — /admin/ai 页面三特性真浏览器 QA（Playwright Chromium，agent 代跑）
+================================================================================
+Date:    2026-10-12
+HEAD:    b363f65 (Localize OCR sending placeholder and drop last bilingual literal)
+Features under test:
+  ① 布局：token-card 第一可见卡片、history 第二且 sticky 吸顶
+  ② 请求中态：pending 占位条出现并被真实数据替换
+  ③ 语言切换：EN/中按钮、持久化、防闪烁
+Env:     uvicorn app.main:app @ 127.0.0.1:23990（端口独占，防同源 localStorage 互踩，
+         呼应 F3 learnings：23983 曾用、23990 本次首用）
+         AI_ENABLED=false + 全假凭据，未打任何真实飞书 API
+Browser: Playwright MCP（Chromium），页面 http://127.0.0.1:23990/admin/ai
+
+--------------------------------------------------------------------------------
+Step 0 服务启动
+--------------------------------------------------------------------------------
+命令（仓库根执行）:
+  WEBHOOK_SHARED_TOKEN=test-wh-token FEISHU_APP_ID=dummy FEISHU_APP_SECRET=dummy \
+  FEISHU_APP_TOKEN=bascn_dummy FEISHU_TABLE_ID=tbldummy FEISHU_RECORD_ID=recdummy \
+  CONFIG_RELOAD_TOKEN=test-admin-token AI_ENABLED=false \
+  nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 23990 \
+    > /tmp/uvicorn-qa.log 2>&1 &
+  echo $! > /tmp/uvicorn-qa.pid
+
+结果: PID=49255（写入 /tmp/uvicorn-qa.pid）
+  curl -s http://127.0.0.1:23990/health → HTTP 200
+  {"success":true,"status":"ok","config_valid":true,"target_mode":"dynamic"}
+
+--------------------------------------------------------------------------------
+特性① 布局（中文初始态，无 token）
+--------------------------------------------------------------------------------
+工具: browser_navigate → browser_evaluate（返回 JSON）
+
+断言与结果:
+  a. DOM 顺序 token-card 在 history-section 之前
+     token-card.compareDocumentPosition(history-section) & DOCUMENT_POSITION_FOLLOWING
+     = true                                                         → PASS
+  b. getComputedStyle(#history-section).position = "sticky"（top: 8px）
+     → sticky 吸顶生效                                              → PASS
+  c. h1 = "AI 配置管理"（默认中文）；documentElement.lang="zh-CN"；
+     localStorage.admin_ai_lang = null（无残留）                    → PASS
+  d. 关键点：#lang-toggle-btn 在 setup 态可见可点
+     offsetWidth>0 可见，文本 "EN"，
+     closest('.card') = null（不属于任何 .card），
+     closest('.header-row') = true（位于 .header-row）              → PASS
+  e. setup 态卡片显隐：
+     #setup-card display=block（显示）
+     其余 .card 全部隐藏（offsetParent=null）：
+       token-card / history-section / ai-connection-section /
+       extract-section / bill-section / ocr-flow-section            → PASS
+  备注: history 卡无 h2，标题为 div.card-title[data-i18n=history.title]，
+        后续断言按 .card-title 文本执行。
+
+截图: .omo/evidence/qa-zh-initial.png
+
+--------------------------------------------------------------------------------
+特性③ 语言切换（EN / 持久化 / 防闪烁）
+--------------------------------------------------------------------------------
+browser_click #lang-toggle-btn（setup 态直接可点）→ browser_evaluate:
+  h1 = "AI Config Admin"                                          → PASS
+  #lang-toggle-btn 文本 = "中"                                    → PASS
+  documentElement.lang = "en"                                     → PASS
+  localStorage.admin_ai_lang = "en"                               → PASS
+  document.title = "AI Config Admin"
+
+截图: .omo/evidence/qa-en-setup.png
+
+刷新（browser_navigate 同 URL）→ browser_evaluate:
+  h1 仍 = "AI Config Admin"、lang="en"、stored="en"
+  → 持久化生效；head 内联防闪烁脚本预置 lang，无中文闪现         → PASS
+
+setup 登录: browser_type #setup-token-input = "test-admin-token"
+            → browser_click #setup-token-btn（触发 location.reload，reload 后仍 EN）
+登录后断言:
+  setup-card display=none；全部卡片可见:
+    token-card / history-section / ai-connection-section /
+    extract-section / bill-section / ocr-flow-section             → PASS
+  history 卡标题 .card-title = "Request History"                  → PASS
+  #history-refresh-btn 存在且可见，文本 = "Refresh"               → PASS
+  AI-off 占位（EN 版，预期）:
+    "History disabled — set AI_HISTORY_DB_PATH to enable"        （记录）
+
+截图: .omo/evidence/qa-en-main.png
+
+后续切回中文: browser_click #lang-toggle-btn →
+  h1="AI 配置管理"、按钮="EN"、localStorage="zh"、lang="zh-CN"    → PASS
+
+--------------------------------------------------------------------------------
+特性② 请求中态（pending 占位 + 真实数据替换）+ fixture 渲染
+--------------------------------------------------------------------------------
+前置: 已登录态注入 fetch patch（browser_evaluate）:
+  - 拦截 /admin/ai/history* → 返回 fixture（3 条，ts 倒序）:
+      req-003 succeeded  ts_iso=2026-10-12 19:00:03  elapsed=2100ms  amount=19.9
+      req-002 failed     ts_iso=2026-10-12 18:59:02  error="extract failed: upstream timeout"
+      req-001 duplicate  ts_iso=2026-10-12 18:58:01
+  - 其余请求放行 window.__qaOrigFetch；window.__qaDelay 可调延迟
+  - 字段名与 HistoryEntry._row_to_dict 完全对齐（codegraph 核对）
+
+3.1 fixture 渲染: browser_click #history-refresh-btn → browser_evaluate:
+  .history-entry 数量 = 3                                         → PASS
+  首条芯片文本 = "✓ Success"（实测 I18N 值，按规则记录不断言死文本）
+  首条芯片 class = "status-tag status-ok"（核心断言）             → PASS
+  全部芯片: "✓ Success" / "✗ Failed" / "⏭ Duplicate"             → PASS
+  首条 .history-meta: scrollWidth 920 <= clientWidth 920 + 1
+  → 宽度无溢出                                                    → PASS
+
+3.2 中文重绘（切回中文，loadHistory 不触发的重绘逻辑）: browser_evaluate:
+  #history-refresh-btn.textContent = "刷新"                       → PASS
+  列表仍 3 条，芯片 = "✓ 成功" / "✗ 失败" / "⏭ 重复"             → PASS
+
+3.3 pending 占位（同步硬证据）:
+  设 window.__qaDelay=5000，同一 browser_evaluate 内:
+    document.getElementById('history-refresh-btn').click()
+    → 同帧立即读 DOM:
+      first.className = "history-entry history-entry-pending"     → PASS
+      芯片 = "⏳ 解析中"（status-tag status-info）                → PASS
+      行文本 = "⏳ 解析中正在处理最新请求"                        （记录）
+  5s 后 browser_evaluate:
+    entryCount=3、pendingCount=0
+    芯片 = ✓ 成功 / ✗ 失败 / ⏭ 重复
+    → 占位被真实数据替换                                          → PASS
+
+3.4 pending 截图（加分项）:
+  MCP 跨调用间隔约 10-15s，两次独立截图调用（15s/8s 窗口）均错过。
+  改用 browser_run_code_unsafe 单脚本（8s delay）:
+    page.evaluate(set delay) → page.click → page.evaluate(读 DOM)
+    → page.screenshot(.omo/evidence/qa-pending.png)
+  同脚本读 DOM: cls="history-entry history-entry-pending"、chip="⏳ 解析中"
+  look_at 复核截图: 历史列表仅一条 ⏳ 解析中（浅蓝芯片）+"正在处理最新请求"
+                    占位条，无其它数据行                          → 截图有效
+  8s 后复核: entryCount=3、pendingCount=0                         → PASS
+
+截图: .omo/evidence/qa-pending.png
+
+--------------------------------------------------------------------------------
+Console 摘录（全程，browser_console_messages level=info）
+--------------------------------------------------------------------------------
+Total: 5 messages（Errors: 4, Warnings: 0）
+  [VERBOSE] DOM Password field is not contained in a form
+            （Chrome 对 token 输入框的常规提示，非 JS 异常，无害）
+  [ERROR] 404 /admin/ai/profile            （AI off，预期）
+  [ERROR] 404 /admin/config/profile        （AI off，预期）
+  [ERROR] 404 /admin/ai/history?limit=200  （AI off init 首次加载，预期）
+  [ERROR] 404 /admin/ai/profile            （切语言触发 status 拉取，AI off，预期）
+
+→ uncaught / JS 异常 = 0；4 条 error 全为预期内 404 网络行（豁免） → PASS
+
+--------------------------------------------------------------------------------
+截图清单
+--------------------------------------------------------------------------------
+.omo/evidence/qa-zh-initial.png   中文初始态（setup 卡 + header-row EN 按钮）
+.omo/evidence/qa-en-setup.png     EN 切换后（setup 态，按钮变"中"）
+.omo/evidence/qa-en-main.png      EN 登录后主界面（Request History 卡 + Refresh）
+.omo/evidence/qa-pending.png      pending 占位条（⏳ 解析中，列表仅此一条）
+（共 4 张 ≥ 3 张要求）
+
+--------------------------------------------------------------------------------
+进程收据（PID / kill）
+--------------------------------------------------------------------------------
+启动: PID 49255（记录于 /tmp/uvicorn-qa.pid）
+清理: kill $(cat /tmp/uvicorn-qa.pid) → sleep 1
+  curl -s -m 2 http://127.0.0.1:23990/health → PORT_CLOSED_OK（端口已关闭）
+  ps -p 49255 → PROCESS_GONE_OK（进程已退出）
+→ 无后台进程残留                                                  → PASS
+
+--------------------------------------------------------------------------------
+零产品文件改动
+--------------------------------------------------------------------------------
+git status --porcelain: 仅 .omo/* 工作区状态文件（boulder.json / run-continuation）
+                        及未跟踪 .omo/、.playwright-mcp/；
+                        app/、docs/、test/、runtime/ 零改动
+git log -1: b363f65（与任务给定 HEAD 一致）
+
+--------------------------------------------------------------------------------
+已知偏差（非阻断，记录供真机复核参考）
+--------------------------------------------------------------------------------
+1. history 卡标题为 div.card-title（无 h2 元素），断言按 .card-title 文本执行。
+2. EN 态芯片实测文案为 "✓ Success"（spec 草稿曾写 "✓ Succeeded"）——
+   按任务规则以 I18N 实际值记录，核心断言落在 status-ok class。
+3. AI-off 时 init 首次 loadHistory 404 → 显示「历史未启用/History disabled」
+   占位，为预期行为；patch 后手动点刷新即出 fixture 数据。
+4. pending 截图需单脚本内联执行才能赶上窗口（MCP 跨调用间隔 >15s），
+   同帧 DOM 断言与单脚本截图均已闭环。
+
+================================================================================
+VERDICT: APPROVE
+================================================================================
+三特性（布局 / 请求中态 / 语言切换）全部断言通过；console 零 JS 异常；
+4 张截图落盘；服务已 kill（收据如上）；零产品文件改动。
+用户可按上述步骤在真机复核。

@@ -1,0 +1,44 @@
+=== Run 1: full new-module suite (happy paths) — python -m pytest test/unit/test_history_store.py -v ===
+Mon Oct 12 14:45:33 CST 2026
+configfile: pytest.ini
+plugins: asyncio-0.24.0, anyio-4.12.0
+asyncio: mode=auto, default_loop_scope=None
+collecting ... collected 8 items
+
+test/unit/test_history_store.py::test_round_trip_preserves_entry PASSED  [ 12%]
+test/unit/test_history_store.py::test_list_recent_orders_desc_and_limit_truncates PASSED [ 25%]
+test/unit/test_history_store.py::test_list_recent_on_empty_db_returns_empty_list PASSED [ 37%]
+test/unit/test_history_store.py::test_future_user_version_degrades_without_raising PASSED [ 50%]
+test/unit/test_history_store.py::test_readonly_directory_degrades_without_raising PASSED [ 62%]
+test/unit/test_history_store.py::test_corrupt_json_columns_fall_back_without_raising PASSED [ 75%]
+test/unit/test_history_store.py::test_settings_ai_history_db_path_defaults_to_none PASSED [ 87%]
+test/unit/test_history_store.py::test_settings_ai_history_db_path_read_from_env PASSED [100%]
+
+============================== 8 passed in 0.03s ===============================
+
+=== Run 2: degraded/failure branches — python -m pytest test/unit/test_history_store.py -v -k 'degraded or readonly' ===
+Mon Oct 12 14:45:34 CST 2026
+configfile: pytest.ini
+plugins: asyncio-0.24.0, anyio-4.12.0
+asyncio: mode=auto, default_loop_scope=None
+collecting ... collected 8 items / 7 deselected / 1 selected
+
+test/unit/test_history_store.py::test_readonly_directory_degrades_without_raising PASSED [100%]
+
+======================= 1 passed, 7 deselected in 0.02s ========================
+
+=== Run 3: full suite regression — python -m pytest test/unit/ -x -q ===
+Mon Oct 12 14:45:34 CST 2026
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+297 passed, 10 warnings in 1.10s
+
+=== Run 2b (fixed filter): failure branches — python -m pytest test/unit/test_history_store.py -v -k 'version or readonly' ===
+Mon Oct 12 14:45:46 CST 2026
+plugins: asyncio-0.24.0, anyio-4.12.0
+asyncio: mode=auto, default_loop_scope=None
+collecting ... collected 8 items / 6 deselected / 2 selected
+
+test/unit/test_history_store.py::test_future_user_version_degrades_without_raising PASSED [ 50%]
+test/unit/test_history_store.py::test_readonly_directory_degrades_without_raising PASSED [100%]
+
+======================= 2 passed, 6 deselected in 0.07s ========================

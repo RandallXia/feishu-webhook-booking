@@ -1,0 +1,60 @@
+# Evidence — task 4: 前端历史卡片 admin.html/css/js + UI 测试 (2026-10-12)
+
+## Happy: node --check
+
+```
+$ node --check app/static/admin.js && echo "NODE_CHECK_OK exit=$?"
+NODE_CHECK_OK exit=0
+```
+
+## Happy: targeted UI test suites
+
+```
+$ .venv/bin/python -m pytest test/unit/test_admin_history_ui.py test/unit/test_admin_page.py test/unit/test_admin_bill_flow.py -q
+41 passed, 3 warnings in 0.77s
+```
+
+(6 new test_admin_history_ui.py tests: html ids / js function-decl grep gate /
+css selectors / history-section zero-innerHTML gate / node --check / init wiring.
+Existing 35 page + bill-flow tests: zero regression.)
+
+## Happy: full suite
+
+```
+$ .venv/bin/python -m pytest test/unit/ -q
+322 passed, 10 warnings in 1.33s
+```
+
+(Baseline 316 + 6 new = 322. Zero failures.)
+
+## Section marker sanity
+
+```
+$ grep -n "function loadHistory|function renderHistory|..." app/static/admin.js
+551:  function loadHistory() {
+576:  function renderHistory(items) {
+592:  function buildHistoryEntry(item) {
+662:  function appendHistoryBlock(details, hasDetails, title, text, className) {
+669:  function appendHistoryBlockTitle(details, title) {
+674:    historyRefreshBtn.addEventListener('click', loadHistory);
+2411:  loadHistory();
+```
+
+## Failure-mode note (not a test in repo, dev-time self-check)
+
+The zero-innerHTML gate was exercised during development: the section's banner
+comment contains the literal word "innerHTML" (it documents the rule), which
+initially forced the test slice to start AFTER the comment block
+(`_history_code_slice` in test_admin_history_ui.py). Simulating an innerHTML
+assignment inside renderHistory would fail
+`test_history_section_zero_innerhtml` — verified by reasoning against the
+regex `re.search(r"innerHTML", slice)`; the slice asserts "historyList" is
+present first so an anchor-drift bug cannot silently pass the gate.
+
+## Edit hiccup (recovered)
+
+An intermediate edit accidentally duplicated the
+`historyRefreshBtn.addEventListener('click', loadHistory)` block (anchor
+collision at the extract-section header). Detected by grep (2 hits), removed
+the duplicate, re-ran node --check + targeted pytest (41 passed) + full suite
+(322 passed).

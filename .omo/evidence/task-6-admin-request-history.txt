@@ -1,0 +1,36 @@
+=== task 6 evidence — admin-request-history (2026-10-12 16:50:57) ===
+
+--- HAPPY: new integration tests (verbose) ---
+configfile: pytest.ini
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 5 items
+
+test/unit/test_history_integration.py::test_three_webhook_requests_recorded_and_listed_newest_first PASSED [ 20%]
+test/unit/test_history_integration.py::test_failed_error_and_succeeded_summary_round_trip_through_api PASSED [ 40%]
+test/unit/test_history_integration.py::test_independent_store_instance_replays_same_rows_from_disk PASSED [ 60%]
+test/unit/test_history_integration.py::test_history_response_contains_no_secret_values PASSED [ 80%]
+test/unit/test_history_integration.py::test_webhook_response_contract_has_no_error_or_summary_keys PASSED [100%]
+
+============================== 5 passed in 0.37s ===============================
+
+--- FULL SUITE: test/unit (quiet) ---
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+327 passed, 10 warnings in 1.70s
+
+--- DOC STRUCTURE: ## counts + section 14 + README terms ---
+## counts:
+docs/ai-pipeline.md:15
+docs/en/ai-pipeline.md:15
+section 14 anchors:
+docs/ai-pipeline.md:539:## 14. 请求历史 / Request History
+docs/en/ai-pipeline.md:465:## 14. Request History
+table-row parity inside section 14:
+zh 17 | en 17
+README terms:
+README.md:1
+docs/en/README.md:1
+1
+conftest pin:
+15:os.environ["AI_HISTORY_DB_PATH"] = ""

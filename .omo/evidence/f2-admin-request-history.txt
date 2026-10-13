@@ -1,0 +1,164 @@
+F2: Code Quality Review — admin-request-history (4de3983..HEAD)
+================================================================
+Date: 2026-10-12
+Reviewer: F2 quality-gate audit (read-only; no product/test files modified)
+Scope: 5 implementation commits 4de3983..HEAD
+  4de3983 store/config/env.example/test
+  c6c5f89 pipeline (PipelineResult.summary/error)
+  f36f1d6 main.py history recording + GET /admin/ai/history
+  0acbb40 admin frontend history card + ui test
+  f3b2f99 compose/gitignore/AGENTS
+  4784f68 integration tests / conftest / bilingual docs
+Working dir: /Users/randallxia/Projects/Personal/feishu-webhook-booking
+Note: .venv/bin/python used (system python 3.10 lacks tomllib) — per Inherited Wisdom.
+
+----------------------------------------------------------------
+Gate 1: Full pytest suite
+----------------------------------------------------------------
+Command:
+  .venv/bin/python -m pytest test/unit/ -q
+
+Output (tail):
+  327 passed, 10 warnings in 2.98s
+  PYTEST_EXIT=0
+
+Result: PASS — 0 failed, matches baseline 327 passed.
+(warnings are pre-existing StarletteDeprecationWarning re HTTP_422_UNPROCESSABLE_ENTITY,
+ unrelated to this change set.)
+
+----------------------------------------------------------------
+Gate 2: JS syntax check
+----------------------------------------------------------------
+Command:
+  node --check app/static/admin.js
+Output: (none on success)
+  NODE_CHECK_EXIT=0
+
+Result: PASS.
+
+----------------------------------------------------------------
+Gate 3: py_compile
+----------------------------------------------------------------
+Command:
+  .venv/bin/python -m py_compile app/history_store.py app/main.py app/pipeline.py app/config.py
+Output: (none on success)
+  PY_COMPILE_EXIT=0
+
+Result: PASS.
+
+----------------------------------------------------------------
+Gate 4: innerHTML spot-check in admin.js history section
+----------------------------------------------------------------
+Section boundaries (grep -n):
+  538:  // Request history (todo 4 — §history-section)
+  678:  // Extract-table config UI (todo 9 — §extract-section)
+
+Command (body 539..677, excluding the banner comment itself):
+  awk 'NR>=539 && NR<=677' app/static/admin.js | grep -n "innerHTML"
+
+Output: exactly 1 hit, at relative line 4 = file line 542:
+  // warnings) is rendered through el()/textContent — innerHTML is NEVER used
+  ^ this is part of the section banner COMMENT declaring the XSS rule,
+    NOT executable code (verified by reading lines 538-545).
+
+Sanity counter-check: 18 occurrences of textContent/createElement/appendChild
+in the same range — dynamic strings are rendered via el()/textContent.
+
+Result: PASS — zero executable-code innerHTML hits in history section.
+
+----------------------------------------------------------------
+Gate 5: Privacy boundary (triple grep)
+----------------------------------------------------------------
+(a) original_text must not reach logs in main.py
+  Command: grep -n "original_text" app/main.py | grep -i "logger\|log\."
+  Output: (empty) — exit 1
+  Result: PASS (original text never logged; note it IS deliberately persisted
+  into the sqlite history DB + returned by the admin-token-gated history API —
+  that is the feature's stated contract, not a leak).
+
+(b) history_store.py log lines carry no user payloads
+  Command: grep -n "logger" app/history_store.py
+  Output:
+    30:  logger = logging.getLogger("feishu_webhook_service.history")
+    111: logger.error("History store degraded ...: db_path=%s, reason=%s", db_path, exc)
+    211: logger.error("History store %s failed: %s", op, exc)
+    213: logger.error("History store %s failed (repeat suppressed)", op)
+  Verified by reading the call sites: op is only "insert"/"list_recent"; exc is a
+  stdlib sqlite3/OS-level exception (no bound user values); line 213 is a fixed
+  throttled string. No original_text/summary/extracted values in any log line.
+  Result: PASS.
+
+(c) pipeline.py error-filling paths
+  Top-level except (pipeline.py:122-133):
+    logger.exception("pipeline run failed alias=%s", target.alias)
+    error="internal error"   ← FIXED copy, no str(exc) leak surface. PASS.
+  Remaining three failure paths all build `error=` from self-controlled exception
+  types (no upstream/user payload beyond exception messages):
+    L178-191: except AiExtractorError → error=f"extract {exc.stage}: {exc}"
+    L205-217: except ValueError → error=f"encode: {exc}"
+      (ValueError raised only at field_codec.py:105/110 — messages contain
+       field_name + repr of the AI-produced single_select value / fallback, both
+       service-side data, not raw OCR text.)
+    L265-278: except FeishuClientError → error=f"bill create {exc.stage}: {exc}"
+  CONFIRMED: all three exc types are project-owned (AiExtractorError raised ~20x
+  in ai_extractor.py; ValueError only field_codec.py:105/110; FeishuClientError
+  ~13x in feishu_client.py), so no arbitrary upstream exception text can flow in.
+
+  Nuance (NOT a reject): FeishuClientError messages for update_record_field /
+  create_record include `body={response.text}` — i.e. Feishu's error response
+  body. This text can reach PipelineResult.error → history DB → admin history
+  API (and also already reaches the existing 502 error envelope on the webhook
+  route, same as master). It is Feishu-side API error content, never OCR user
+  text, and the history API is X-Admin-Token gated — consistent with the
+  project's existing trust boundary. Recorded as an accepted nuance.
+
+Result: PASS (with recorded nuance).
+
+----------------------------------------------------------------
+Gate 6: Concurrency / degraded-mode review
+----------------------------------------------------------------
+(a) All HistoryStore DB operations inside self._lock:
+  history_store.py:122 insert    → with self._lock: execute+commit
+  history_store.py:149 list_recent → with self._lock: execute+fetchall
+  PASS.
+
+(b) insert/list_recent never re-raise:
+  insert    except Exception → self._log_error_throttled("insert", exc); return (silent no-op)  L141-142
+  list_recent except Exception → self._log_error_throttled(...); return []      L156-158
+  Degraded mode short-circuits: L119-120 (insert returns), L146-147 (list returns []).
+  PASS.
+
+(c) All store calls in main.py wrapped in asyncio.to_thread:
+  grep -n "to_thread" app/main.py
+    344: await asyncio.to_thread(store.insert, entry)          (webhook route)
+    690: await asyncio.to_thread(store.list_recent, limit)     (admin history API)
+  Store call sites: L327-344 (record_history closure) and L676-690 (history API)
+  — exactly these two, both wrapped. PASS.
+
+Result: PASS.
+
+----------------------------------------------------------------
+Gate 7: Webhook contract unchanged
+----------------------------------------------------------------
+(a) git diff 1544fb2..HEAD -- app/main.py | grep -A2 "class WebhookSuccessResponse\|class WebhookRequest"
+  Output: (empty) — exit 1 → ZERO changes to both contract models since 1544fb2.
+
+(b) grep -n "summary\|error" app/main.py | grep "WebhookSuccessResponse"
+  Output: (empty) — exit 1 → response construction adds no summary/error fields.
+
+(c) Read verification of current model bodies:
+  WebhookRequest (main.py:48-55): extra="forbid" intact; original_text/source/
+  raw_ocr/book_alias/year unchanged.
+  WebhookSuccessResponse (main.py:71-81): success/request_id/record_id/book_alias/
+  message + 4 pre-existing ai_* optional fields; NO new fields.
+
+Result: PASS.
+
+----------------------------------------------------------------
+VERDICT: APPROVE
+----------------------------------------------------------------
+All 7 quality gates green. One accepted nuance recorded under Gate 5(c):
+FeishuClientError messages may carry Feishu API error bodies into PipelineResult
+error → history DB → admin API; this is Feishu-side (not user OCR) content,
+admin-token gated, and matches the pre-existing 502 envelope behavior. No
+REJECT-level issue found; no product or test files were modified by this audit.

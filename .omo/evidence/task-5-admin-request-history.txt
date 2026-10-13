@@ -1,0 +1,32 @@
+=== TASK 5 VERIFICATION EVIDENCE ===
+Date: 2026-10-12
+Branch: (current)
+
+-- git check-ignore --
+$ git check-ignore data/test.db
+data/test.db
+=> exit 0, PASS (data/ directory is gitignored)
+
+-- git status on data/ --
+$ mkdir -p data && touch data/history.db && git status --short -- data/ && rm -rf data
+(no output)
+=> PASS (data/ produces zero git status output)
+
+-- history_store mentions in AGENTS.md --
+$ grep -c history_store AGENTS.md
+3
+=> PASS (>= 2)
+
+-- data volume in docker-compose.yml --
+$ grep -n './data:/data' docker-compose.yml
+19:      - ./data:/data
+=> PASS (line 19, in volumes section)
+
+-- Modified files --
+1. docker-compose.yml: added `- ./data:/data` volume + comment
+2. .gitignore: added `data/` ignore entry under Logs section
+3. AGENTS.md: 3 changes
+   a. ANTI-PATTERNS: exception note for stdlib sqlite3
+   b. STRUCTURE tree: added history_store.py line
+   c. CODE MAP: added HistoryStore row
+4. app/AGENTS.md: added history_store.py to WHERE TO LOOK table

@@ -1,0 +1,56 @@
+=== Task 3 evidence — admin-request-history ===
+
+## Happy: test_history_api.py full run
+$ .venv/bin/python -m pytest test/unit/test_history_api.py -v
+
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/randallxia/Projects/Personal/feishu-webhook-booking/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/randallxia/Projects/Personal/feishu-webhook-booking
+configfile: pytest.ini
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 12 items
+
+test/unit/test_history_api.py::test_history_records_succeeded_pipeline_result PASSED [  8%]
+test/unit/test_history_api.py::test_history_records_failed_pipeline_result_with_error PASSED [ 16%]
+test/unit/test_history_api.py::test_history_records_duplicate_pipeline_result PASSED [ 25%]
+test/unit/test_history_api.py::test_history_records_registry_unavailable_before_503 PASSED [ 33%]
+test/unit/test_history_api.py::test_webhook_success_response_contract_has_no_error_or_summary_keys PASSED [ 41%]
+test/unit/test_history_api.py::test_unauthorized_history_request_returns_401 PASSED [ 50%]
+test/unit/test_history_api.py::test_ai_disabled_history_returns_404 PASSED [ 58%]
+test/unit/test_history_api.py::test_history_disabled_returns_404_when_store_missing PASSED [ 66%]
+test/unit/test_history_api.py::test_limit_below_minimum_rejected_422 PASSED [ 75%]
+test/unit/test_history_api.py::test_limit_above_maximum_rejected_422 PASSED [ 83%]
+test/unit/test_history_api.py::test_limit_boundary_values_accepted PASSED [ 91%]
+test/unit/test_history_api.py::test_empty_history_returns_empty_items PASSED [100%]
+
+============================== 12 passed in 0.43s ==============================
+
+## Failure scenario: -k 'disabled or unauthorized or limit' (all pass — these ARE the failure-branch tests)
+$ .venv/bin/python -m pytest test/unit/test_history_api.py -k "disabled or unauthorized or limit" -v
+
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/randallxia/Projects/Personal/feishu-webhook-booking/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/randallxia/Projects/Personal/feishu-webhook-booking
+configfile: pytest.ini
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 12 items / 6 deselected / 6 selected
+
+test/unit/test_history_api.py::test_unauthorized_history_request_returns_401 PASSED [ 16%]
+test/unit/test_history_api.py::test_ai_disabled_history_returns_404 PASSED [ 33%]
+test/unit/test_history_api.py::test_history_disabled_returns_404_when_store_missing PASSED [ 50%]
+test/unit/test_history_api.py::test_limit_below_minimum_rejected_422 PASSED [ 66%]
+test/unit/test_history_api.py::test_limit_above_maximum_rejected_422 PASSED [ 83%]
+test/unit/test_history_api.py::test_limit_boundary_values_accepted PASSED [100%]
+
+======================= 6 passed, 6 deselected in 0.26s ========================
+
+## Full-suite regression: 304 baseline + 12 new = 316 passed
+$ .venv/bin/python -m pytest test/unit/ -q
+
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+316 passed, 10 warnings in 1.18s

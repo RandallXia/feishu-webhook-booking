@@ -1,0 +1,152 @@
+===== F4: SCOPE FIDELITY AUDIT =====
+Date: 2026-10-12
+Baseline: 1544fb2
+Plan: .omo/plans/admin-request-history.md
+
+----- CHECK 1: Dependency ban -----
+Command: git diff 1544fb2..HEAD -- requirements.txt requirements-dev.txt
+Output: (empty — zero diff)
+Status: PASS
+
+Command: grep -iE "sqlite|orm|sqlalchemy|alembic" requirements.txt requirements-dev.txt
+Output: EXIT:1 (zero hits)
+Status: PASS
+
+Conclusion: No new deps added. sqlite3 is stdlib, not in requirements. ✓
+
+----- CHECK 2: Webhook contract -----
+Command: git diff 1544fb2..HEAD -- app/main.py | grep -E "^\+\..*class (WebhookRequest|WebhookSuccessResponse)"
+Output: EXIT:1 (zero hits — no new class definitions)
+Status: PASS
+
+Command: grep -n 'extra.*forbid' app/main.py | head -1
+Output: 49:    model_config = ConfigDict(extra="forbid")
+(line 49 is immediately after `class WebhookRequest(BaseModel):` at line 48)
+Status: PASS
+
+Command: git diff 1544fb2..HEAD -- app/main.py | grep -E "^[+-].*WebhookRequest|WebhookSuccessResponse"
+Output: EXIT:1 (zero lines touching either class)
+Status: PASS
+
+Conclusion: WebhookRequest.extra="forbid" still present, zero diff lines touch either class. ✓
+
+----- CHECK 3: Secret key zero entry -----
+Command: git diff 1544fb2..HEAD | grep -iE "sk-[a-zA-Z0-9]{10,}|FEISHU_APP_SECRET=.*[a-zA-Z0-9]{8}"
+Output: EXIT:1 (zero hits)
+Status: PASS
+
+.env.example diff: only adds comment `#AI_HISTORY_DB_PATH=/data/history.db` — no real key values.
+Status: PASS
+
+Conclusion: Zero real secrets in diff. ✓
+
+----- CHECK 4: Frontend ban -----
+Command: git diff 1544fb2..HEAD -- app/static/ | grep -E "^\+\..*<script|^\+\..*cdn\.|^\+\..*http(s)?://(unpkg|jsdelivr|cdnjs)"
+Output: EXIT:1 (zero hits)
+Status: PASS
+
+Conclusion: No external scripts, CDN imports, or framework introductions. ✓
+
+----- CHECK 5: Out-of-scope files (22 file manifest verification) -----
+
+Expected inventory from plan:
+  app/ 4: history_store.py [new], config.py, main.py, pipeline.py
+  static/ 3: admin.css, admin.html, admin.js
+  test/ 6: test_admin_history_ui.py, test_history_api.py, test_history_integration.py,
+            test_history_store.py, test_pipeline.py, conftest.py [note: conftest.py is root-level, not test/]
+  compose + gitignore: docker-compose.yml, .gitignore
+  docs + README: AGENTS.md, app/AGENTS.md, docs/ai-pipeline.md, docs/en/ai-pipeline.md,
+                 docs/en/README.md, README.md
+  config: .env.example
+
+Actual git diff --stat:
+  .env.example                  |   4 +
+  .gitignore                    |   3 +
+  AGENTS.md                     |   4 +-
+  README.md                     |   4 +
+  app/AGENTS.md                 |   1 +
+  app/config.py                 |   2 +
+  app/history_store.py          | 213 +++++  [new]
+  app/main.py                   |  95 ++++
+  app/pipeline.py               |   8 +
+  app/static/admin.css          |  20 ++
+  app/static/admin.html         |  14 +
+  app/static/admin.js           | 141 ++++
+  conftest.py                   |   1 +
+  docker-compose.yml            |   2 +
+  docs/ai-pipeline.md           |  65 ++++
+  docs/en/README.md             |   2 +
+  docs/en/ai-pipeline.md        |  63 ++++
+  test/unit/test_admin_history_ui.py    | 144 ++++
+  test/unit/test_history_api.py         | 467 ++++
+  test/unit/test_history_integration.py | 371 ++++
+  test/unit/test_history_store.py       | 292 ++++
+  test/unit/test_pipeline.py            | 159 ++++
+  22 files changed, 2074 insertions(+), 1 deletion(-)
+
+File-by-file match (22 vs 22):
+  ✓ .env.example
+  ✓ .gitignore
+  ✓ AGENTS.md
+  ✓ README.md
+  ✓ app/AGENTS.md
+  ✓ app/config.py
+  ✓ app/history_store.py
+  ✓ app/main.py
+  ✓ app/pipeline.py
+  ✓ app/static/admin.css
+  ✓ app/static/admin.html
+  ✓ app/static/admin.js
+  ✓ conftest.py
+  ✓ docker-compose.yml
+  ✓ docs/ai-pipeline.md
+  ✓ docs/en/README.md
+  ✓ docs/en/ai-pipeline.md
+  ✓ test/unit/test_admin_history_ui.py
+  ✓ test/unit/test_history_api.py
+  ✓ test/unit/test_history_integration.py
+  ✓ test/unit/test_history_store.py
+  ✓ test/unit/test_pipeline.py
+
+Status: PASS — 22/22 match, zero out-of-scope files. ✓
+
+----- CHECK 6: data/ no artifacts -----
+Command: git ls-files data/
+Output: EXIT:0 (empty — no tracked files under data/)
+Status: PASS
+
+Command: git check-ignore data/x.db
+Output: data/x.db | EXIT:0
+Status: PASS
+
+Conclusion: data/ is gitignored and has zero committed files. ✓
+
+----- CHECK 7: .omo/ zero in diff -----
+Command: git diff 1544fb2..HEAD --stat -- .omo/
+Output: (empty) | EXIT:0
+Status: PASS
+
+git ls-files .omo/: many pre-existing artifacts (boulder.json, plans/, drafts/, etc.)
+→ all from prior commits, NOT in this feature's diff.
+Status: PASS
+
+Conclusion: .omo/ not modified by any of the 6 commits in this feature. ✓
+
+----- CHECK 8: conftest.py minimal change -----
+Command: git diff 1544fb2..HEAD -- conftest.py
+Output: +os.environ["AI_HISTORY_DB_PATH"] = "" (single line, in-scope)
+Status: PASS
+
+----- VERDICT -----
+
+ALL 8 SCOPE FIDELITY CHECKS PASS:
+  1. Dependency ban          — PASS (zero new deps)
+  2. Webhook contract        — PASS (zero diff on WebhookRequest/WebhookSuccessResponse; extra=forbid intact)
+  3. Secret key zero entry   — PASS (zero real keys in diff)
+  4. Frontend ban            — PASS (zero CDN/external scripts)
+  5. Out-of-scope files      — PASS (22/22 files match plan inventory exactly)
+  6. data/ no artifacts      — PASS (gitignored, zero committed files)
+  7. .omo/ zero in diff      — PASS (no .omo/ changes in feature's 6 commits)
+  8. conftest.py minimal     — PASS (single in-scope line)
+
+VERDICT: APPROVE

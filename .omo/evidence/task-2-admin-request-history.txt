@@ -1,0 +1,51 @@
+=== task-2: PipelineResult summary/error fields — evidence ===
+
+--- Happy path (all 33 tests) ---
+test/unit/test_pipeline.py::test_happy_full_chain PASSED
+test/unit/test_pipeline.py::test_ai_failure_returns_failed PASSED
+test/unit/test_pipeline.py::test_dedup_hit_returns_duplicate PASSED
+test/unit/test_pipeline.py::test_dedup_ttl_expiry_reruns PASSED
+test/unit/test_pipeline.py::test_summary_writeback_failure_continues PASSED
+test/unit/test_pipeline.py::test_encode_valueerror_returns_failed PASSED
+test/unit/test_pipeline.py::test_run_catches_all_exceptions PASSED
+test/unit/test_pipeline.py::test_extracted_dict_has_notification_fields PASSED
+test/unit/test_pipeline.py::test_disabled_category_omitted_from_create_record PASSED
+test/unit/test_pipeline.py::test_disabled_summary_skips_update_record_field PASSED
+test/unit/test_pipeline.py::test_all_bill_fields_disabled_skips_create_record PASSED
+test/unit/test_pipeline.py::test_disabled_category_omitted_from_extracted_dict PASSED
+test/unit/test_pipeline.py::test_pipelineresult_backward_compat_positional_args PASSED
+test/unit/test_pipeline.py::test_extract_failure_sets_error PASSED
+test/unit/test_pipeline.py::test_encode_valueerror_sets_error PASSED
+test/unit/test_pipeline.py::test_bill_create_failure_sets_error PASSED
+test/unit/test_pipeline.py::test_success_path_sets_summary PASSED
+test/unit/test_pipeline.py::test_dedup_hit_summary_and_error_are_none PASSED
+test/unit/test_pipeline.py::test_top_level_exception_sets_internal_error PASSED
+test/unit/test_webhook_ai.py::test_regression_disabled_response_has_5_keys PASSED
+test/unit/test_webhook_ai.py::test_enabled_succeeded_response_has_ai_fields PASSED
+test/unit/test_webhook_ai.py::test_enabled_ai_failure_returns_200 PASSED
+test/unit/test_webhook_ai.py::test_unauthorized_no_ai_triggered PASSED
+test/unit/test_webhook_ai.py::test_validation_error_no_ai_triggered PASSED
+test/unit/test_failure_matrix.py::test_ai_timeout_returns_200_failed PASSED
+test/unit/test_failure_matrix.py::test_ai_missing_required_key_returns_200_failed PASSED
+test/unit/test_failure_matrix.py::test_unwhitelisted_single_select_uses_fallback PASSED
+test/unit/test_failure_matrix.py::test_bad_date_falls_back_to_today PASSED
+test/unit/test_failure_matrix.py::test_duplicate_text_within_ttl_returns_duplicate PASSED
+test/unit/test_failure_matrix.py::test_ttl_expiry_reruns_full_chain PASSED
+test/unit/test_failure_matrix.py::test_disabled_response_has_no_ai_keys PASSED
+test/unit/test_failure_matrix.py::test_profile_hot_reload_bad_toml_returns_503 PASSED
+test/unit/test_failure_matrix.py::test_full_pipeline_without_client_token PASSED
+============================== 33 passed in 0.37s
+
+--- Failure path (-k "error") ---
+.venv/bin/python -m pytest test/unit/ -q -k "error"
+test_pipelineresult_backward_compat_positional_args PASSED
+test_extract_failure_sets_error PASSED
+test_encode_valueerror_sets_error PASSED
+test_bill_create_failure_sets_error PASSED
+test_top_level_exception_sets_internal_error PASSED
+(5 passed)
+
+--- Full suite ---
+.venv/bin/python -m pytest test/unit/ -q
+304 passed, 10 warnings in 1.45s
+(baseline was 297 passed)

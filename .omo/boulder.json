@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "active_work_id": "ui-redesign-field-toggles-6607c090",
+  "active_work_id": "admin-request-history-94c3f969",
   "works": {
     "ai-bill-extraction-pipeline-66cd172d": {
       "work_id": "ai-bill-extraction-pipeline-66cd172d",
@@ -197,35 +197,249 @@
       },
       "ended_at": "2026-09-01T10:27:15.295Z",
       "elapsed_ms": 4357359
+    },
+    "admin-request-history-94c3f969": {
+      "work_id": "admin-request-history-94c3f969",
+      "active_plan": "/Users/randallxia/Projects/Personal/feishu-webhook-booking/.omo/plans/admin-request-history.md",
+      "plan_name": "admin-request-history",
+      "status": "completed",
+      "started_at": "2026-10-12T06:23:47.071Z",
+      "updated_at": "2026-10-12T09:35:18.847Z",
+      "session_ids": [
+        "opencode:ses_fb8666b44ffez08duJ4hET63iW"
+      ],
+      "session_origins": {
+        "opencode:ses_fb8666b44ffez08duJ4hET63iW": "direct"
+      },
+      "agent": "atlas",
+      "task_sessions": {
+        "todo:1": {
+          "task_key": "todo:1",
+          "task_label": "1",
+          "task_title": "app/history_store.py + Settings：sqlite3 历史存储与门控配置",
+          "session_id": "opencode:ses_ed12daf35ffeTD0bSksR56uTgy",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "started_at": "2026-10-12T06:33:33.644Z",
+          "status": "completed",
+          "updated_at": "2026-10-12T07:11:39.081Z",
+          "ended_at": "2026-10-12T07:11:39.080Z",
+          "elapsed_ms": 2285436
+        },
+        "todo:2": {
+          "task_key": "todo:2",
+          "task_label": "2",
+          "task_title": "app/pipeline.py：PipelineResult 补 summary/error 数据通路",
+          "session_id": "opencode:ses_ed0f4dd75ffeuOMDlyIQxrVZzg",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "started_at": "2026-10-12T07:34:31.016Z",
+          "status": "completed",
+          "updated_at": "2026-10-12T07:53:11.381Z",
+          "ended_at": "2026-10-12T07:53:11.381Z",
+          "elapsed_ms": 1120365
+        },
+        "todo:3": {
+          "task_key": "todo:3",
+          "task_label": "3",
+          "task_title": "app/main.py 接线：lifespan 构建 store + ingest_ocr 记录钩子 + GET /admin/ai/history",
+          "session_id": "opencode:ses_ed0e413feffeG8Nh3J4lRW5fF9",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-10-12T08:15:06.871Z",
+          "started_at": "2026-10-12T08:12:40.558Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T08:15:06.871Z",
+          "elapsed_ms": 146313
+        },
+        "todo:4": {
+          "task_key": "todo:4",
+          "task_label": "4",
+          "task_title": "前端历史卡片：admin.html/css/js 混排时间线",
+          "session_id": "opencode:ses_ed0cfb6d6ffePyfRN6s4k3WqcM",
+          "agent": "Sisyphus-Junior",
+          "category": "visual-engineering",
+          "updated_at": "2026-10-12T08:32:46.140Z",
+          "started_at": "2026-10-12T08:30:19.734Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T08:32:46.140Z",
+          "elapsed_ms": 146406
+        },
+        "todo:5": {
+          "task_key": "todo:5",
+          "task_label": "5",
+          "task_title": "部署与配置面：compose 卷 + .gitignore + AGENTS.md",
+          "session_id": "opencode:ses_ed0c105abffeBiSQx2dcnpq6I7",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-low",
+          "updated_at": "2026-10-12T08:39:04.686Z",
+          "started_at": "2026-10-12T08:37:17.200Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T08:39:04.686Z",
+          "elapsed_ms": 107486
+        },
+        "todo:6": {
+          "task_key": "todo:6",
+          "task_label": "6",
+          "task_title": "集成测试 + 双语文档",
+          "session_id": "opencode:ses_ed0bab701ffeoVz5ArjNaV1pJd",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-10-12T08:56:37.171Z",
+          "started_at": "2026-10-12T08:53:38.952Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T08:56:37.171Z",
+          "elapsed_ms": 178219
+        },
+        "final-wave:f1": {
+          "task_key": "final-wave:f1",
+          "task_label": "F1",
+          "task_title": "Plan compliance audit",
+          "session_id": "opencode:ses_ed0ab3556ffeoP1TCwt7WWxeQ3",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-low",
+          "updated_at": "2026-10-12T09:05:41.036Z",
+          "started_at": "2026-10-12T09:02:39.900Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T09:05:41.036Z",
+          "elapsed_ms": 181136
+        },
+        "final-wave:f2": {
+          "task_key": "final-wave:f2",
+          "task_label": "F2",
+          "task_title": "Code quality review",
+          "session_id": "opencode:ses_ed0a0c47fffePit5swJmP8WA4f",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-10-12T09:33:28.731Z",
+          "started_at": "2026-10-12T09:18:35.929Z",
+          "status": "completed",
+          "ended_at": "2026-10-12T09:33:28.731Z",
+          "elapsed_ms": 892802
+        }
+      },
+      "ended_at": "2026-10-12T09:35:18.847Z",
+      "elapsed_ms": 11491776
     }
   },
-  "active_plan": "/Users/randallxia/Projects/Personal/feishu-webhook-booking/.omo/plans/ui-redesign-field-toggles.md",
-  "started_at": "2026-09-01T09:14:37.936Z",
+  "active_plan": "/Users/randallxia/Projects/Personal/feishu-webhook-booking/.omo/plans/admin-request-history.md",
+  "started_at": "2026-10-12T06:23:47.071Z",
   "status": "completed",
-  "updated_at": "2026-09-01T10:27:15.295Z",
+  "updated_at": "2026-10-12T09:35:18.847Z",
   "session_ids": [
     "opencode:ses_fb8666b44ffez08duJ4hET63iW"
   ],
   "session_origins": {
     "opencode:ses_fb8666b44ffez08duJ4hET63iW": "direct"
   },
-  "plan_name": "ui-redesign-field-toggles",
+  "plan_name": "admin-request-history",
   "task_sessions": {
-    "final-wave:f3": {
-      "task_key": "final-wave:f3",
-      "task_label": "F3",
-      "task_title": "Real manual QA（可选人机抽查——写跳过语义已由 todo 5 集成测试覆盖）：Windows 目检映射表格渲染/开关灰显/折叠部署信息",
-      "session_id": "opencode:ses_fa3a6907cffe4PuljuKYrjt5Ra",
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "app/history_store.py + Settings：sqlite3 历史存储与门控配置",
+      "session_id": "opencode:ses_ed12daf35ffeTD0bSksR56uTgy",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "started_at": "2026-10-12T06:33:33.644Z",
+      "status": "completed",
+      "updated_at": "2026-10-12T07:11:39.081Z",
+      "ended_at": "2026-10-12T07:11:39.080Z",
+      "elapsed_ms": 2285436
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "app/pipeline.py：PipelineResult 补 summary/error 数据通路",
+      "session_id": "opencode:ses_ed0f4dd75ffeuOMDlyIQxrVZzg",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-09-01T09:50:42.649Z",
-      "started_at": "2026-09-01T09:45:28.346Z",
+      "started_at": "2026-10-12T07:34:31.016Z",
       "status": "completed",
-      "ended_at": "2026-09-01T09:50:42.649Z",
-      "elapsed_ms": 314303
+      "updated_at": "2026-10-12T07:53:11.381Z",
+      "ended_at": "2026-10-12T07:53:11.381Z",
+      "elapsed_ms": 1120365
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "app/main.py 接线：lifespan 构建 store + ingest_ocr 记录钩子 + GET /admin/ai/history",
+      "session_id": "opencode:ses_ed0e413feffeG8Nh3J4lRW5fF9",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-10-12T08:15:06.871Z",
+      "started_at": "2026-10-12T08:12:40.558Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T08:15:06.871Z",
+      "elapsed_ms": 146313
+    },
+    "todo:4": {
+      "task_key": "todo:4",
+      "task_label": "4",
+      "task_title": "前端历史卡片：admin.html/css/js 混排时间线",
+      "session_id": "opencode:ses_ed0cfb6d6ffePyfRN6s4k3WqcM",
+      "agent": "Sisyphus-Junior",
+      "category": "visual-engineering",
+      "updated_at": "2026-10-12T08:32:46.140Z",
+      "started_at": "2026-10-12T08:30:19.734Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T08:32:46.140Z",
+      "elapsed_ms": 146406
+    },
+    "todo:5": {
+      "task_key": "todo:5",
+      "task_label": "5",
+      "task_title": "部署与配置面：compose 卷 + .gitignore + AGENTS.md",
+      "session_id": "opencode:ses_ed0c105abffeBiSQx2dcnpq6I7",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-10-12T08:39:04.686Z",
+      "started_at": "2026-10-12T08:37:17.200Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T08:39:04.686Z",
+      "elapsed_ms": 107486
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "集成测试 + 双语文档",
+      "session_id": "opencode:ses_ed0bab701ffeoVz5ArjNaV1pJd",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-10-12T08:56:37.171Z",
+      "started_at": "2026-10-12T08:53:38.952Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T08:56:37.171Z",
+      "elapsed_ms": 178219
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "Plan compliance audit",
+      "session_id": "opencode:ses_ed0ab3556ffeoP1TCwt7WWxeQ3",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-10-12T09:05:41.036Z",
+      "started_at": "2026-10-12T09:02:39.900Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T09:05:41.036Z",
+      "elapsed_ms": 181136
+    },
+    "final-wave:f2": {
+      "task_key": "final-wave:f2",
+      "task_label": "F2",
+      "task_title": "Code quality review",
+      "session_id": "opencode:ses_ed0a0c47fffePit5swJmP8WA4f",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-10-12T09:33:28.731Z",
+      "started_at": "2026-10-12T09:18:35.929Z",
+      "status": "completed",
+      "ended_at": "2026-10-12T09:33:28.731Z",
+      "elapsed_ms": 892802
     }
   },
   "agent": "atlas",
-  "ended_at": "2026-09-01T10:27:15.295Z",
-  "elapsed_ms": 4357359
+  "ended_at": "2026-10-12T09:35:18.847Z",
+  "elapsed_ms": 11491776
 }
