@@ -10,7 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
+# Upgrade build/packaging tooling FIRST (pip + setuptools), then the app deps.
+# The base image ships an old setuptools; Scout-class scanners flag it (and any
+# stale transitive CVE carriers) unless forced to latest in the same layer as
+# the dependency install. Tsinghua index applies to the app deps; pip itself
+# upgrades fine from the default index inside alpine (keep one combined layer
+# so a rebuild always re-resolves all of them to current).
+RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r /app/requirements.txt && \
     pip install --no-cache-dir --upgrade setuptools
 
