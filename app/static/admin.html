@@ -52,9 +52,13 @@
   </div>
 
   <!-- Request history — GET /admin/ai/history card — sticks to the top while scrolling -->
+  <span id="history-pinned-sentinel" aria-hidden="true"></span>
   <div class="card" id="history-section">
     <div class="card-title" data-i18n="history.title">记账历史</div>
     <div id="history-banner"></div>
+    <div id="history-collapsed-bar" class="history-collapsed-bar" style="display:none;">
+      <button class="btn btn-secondary history-expand-btn" id="history-expand-btn" type="button" data-i18n="history.expandBtn">展开</button>
+    </div>
     <div class="history-controls">
       <button class="btn btn-secondary" id="history-refresh-btn" data-i18n="history.refreshBtn">刷新</button>
       <label class="history-limit-label" for="history-limit-input" data-i18n="history.limitLabel">条数</label>

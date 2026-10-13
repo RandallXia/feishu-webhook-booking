@@ -63,6 +63,11 @@
       'history.chipSuccess': '✓ 成功',
       'history.chipFailed': '✗ 失败',
       'history.chipDuplicate': '⏭ 重复',
+      'history.chipSuccessShort': '✓ 成功',
+      'history.chipFailedShort': '✗ 失败',
+      'history.chipPendingShort': '⏳ 进行中',
+      'history.expandBtn': '展开',
+      'history.collapseBtn': '收起',
       'status.loading': '状态加载中...',
       'status.configInvalid': '配置无效',
       'status.configOk': '配置有效 · generation ',
@@ -257,6 +262,11 @@
       'history.chipSuccess': '✓ Success',
       'history.chipFailed': '✗ Failed',
       'history.chipDuplicate': '⏭ Duplicate',
+      'history.chipSuccessShort': '✓ OK',
+      'history.chipFailedShort': '✗ Failed',
+      'history.chipPendingShort': '⏳ Running',
+      'history.expandBtn': 'Expand',
+      'history.collapseBtn': 'Collapse',
       'status.loading': 'Loading status...',
       'status.configInvalid': 'Config Invalid',
       'status.configOk': 'Config OK · generation ',
@@ -1011,6 +1021,81 @@
   var historyRefreshBtn = document.getElementById('history-refresh-btn');
   var historyLimitInput = document.getElementById('history-limit-input');
 
+  // Pinned mode: while the history card is stuck (sticky) at the viewport top,
+  // collapse the list into a counts summary so it can never push the config
+  // sections off-screen. A zero-height sentinel span placed just above the
+  // card flips when the card reaches its sticky offset. historyPinned tracks
+  // the physical stickiness (observer-owned); historyUserExpanded is the
+  // user's override (Expand/Collapse links) — collapsing happens only when
+  // the card is pinned AND the user has not opted out of the collapsed view.
+  var historyPinned = false;
+  var historyUserExpanded = false;
+  var historyPinnedSentinel = document.getElementById('history-pinned-sentinel');
+  var historyCollapsedBar = document.getElementById('history-collapsed-bar');
+  var historyExpandBtn = document.getElementById('history-expand-btn');
+  var lastHistoryCounts = { ok: 0, err: 0, pending: 0 };
+
+  function historyCountsFrom(items) {
+    var c = { ok: 0, err: 0, pending: 0 };
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i] && items[i].ai_status;
+      if (s === 'pending' || items[i].pending === true) c.pending++;
+      else if (s === 'succeeded') c.ok++;
+      else if (s === 'failed') c.err++;
+    }
+    return c;
+  }
+
+  function renderHistoryCountsBar() {
+    if (!historyCollapsedBar) return;
+    var chips = historyCollapsedBar.querySelector('.counts-chips');
+    if (chips) historyCollapsedBar.removeChild(chips);
+    chips = el('span', { className: 'counts-chips' });
+    var c = lastHistoryCounts;
+    if (c.ok) chips.appendChild(el('span', { className: 'status-tag status-ok' }, t('history.chipSuccessShort') + ' ' + c.ok));
+    if (c.err) chips.appendChild(el('span', { className: 'status-tag status-err' }, t('history.chipFailedShort') + ' ' + c.err));
+    if (c.pending) chips.appendChild(el('span', { className: 'status-tag status-info' }, t('history.chipPendingShort') + ' ' + c.pending));
+    if (!chips.firstChild) chips.appendChild(el('span', { className: 'placeholder' }, t('history.empty')));
+    historyCollapsedBar.insertBefore(chips, historyCollapsedBar.firstChild);
+  }
+
+  function applyHistoryPinned() {
+    if (!historySection) return;
+    var collapsed = historyPinned && !historyUserExpanded;
+    if (collapsed) {
+      historySection.classList.add('history-pinned');
+      renderHistoryCountsBar();
+      if (historyCollapsedBar) historyCollapsedBar.style.display = 'flex';
+      if (historyList) historyList.style.display = 'none';
+      if (historyExpandBtn) historyExpandBtn.style.display = '';
+    } else {
+      historySection.classList.remove('history-pinned');
+      if (historyCollapsedBar) historyCollapsedBar.style.display = 'none';
+      if (historyList) historyList.style.display = '';
+      if (historyExpandBtn) historyExpandBtn.style.display = 'none';
+    }
+  }
+
+  if (historyPinnedSentinel && 'IntersectionObserver' in window) {
+    var pinnedObserver = new IntersectionObserver(function(entries) {
+      // The sentinel sits immediately above the sticky card: once it has
+      // scrolled out ABOVE the viewport, the card is pinned at its sticky
+      // offset. (entries usually holds a single entry — take the last one.)
+      for (var i = 0; i < entries.length; i++) {
+        historyPinned = !entries[i].isIntersecting && entries[i].boundingClientRect.top < 0;
+      }
+      applyHistoryPinned();
+    }, { threshold: 0 });
+    pinnedObserver.observe(historyPinnedSentinel);
+  }
+
+  if (historyExpandBtn) {
+    historyExpandBtn.addEventListener('click', function() {
+      historyUserExpanded = true;
+      applyHistoryPinned();
+    });
+  }
+
   // In-flight placeholder: one pending row at the top of the history list.
   // Used by every loadHistory() pull and by the OCR flow while its webhook
   // is in flight; the next real renderHistory() (or the 404 placeholder)
@@ -1018,12 +1103,26 @@
   function showHistoryPending() {
     if (!historyList) return;
     while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
+    appendHistoryCollapseLink();
     var row = el('div', { className: 'history-entry history-entry-pending' });
     var meta = el('div', { className: 'history-meta' });
     meta.appendChild(el('span', { className: 'status-tag status-info' }, t('history.pendingChip')));
     meta.appendChild(el('span', null, t('history.pendingText')));
     row.appendChild(meta);
     historyList.appendChild(row);
+  }
+
+  // Collapse link pinned to the top of the rendered list. Only meaningful
+  // while the card is physically pinned — applyHistoryPinned() re-collapses
+  // (and hides the list) when the user opts back into the summary view.
+  function appendHistoryCollapseLink() {
+    var link = el('a', { className: 'history-collapse-link', href: '#' }, t('history.collapseBtn'));
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      historyUserExpanded = false;
+      applyHistoryPinned();
+    });
+    historyList.appendChild(link);
   }
 
   function loadHistory() {
@@ -1034,7 +1133,9 @@
     if (n > 1000) n = 1000;
     api('/admin/ai/history?limit=' + n)
       .then(function(data) {
+        lastHistoryCounts = historyCountsFrom(data.items || []);
         renderHistory(data.items);
+        applyHistoryPinned();
       })
       .catch(function(err) {
         // 404 = feature off: AI disabled or AI_HISTORY_DB_PATH unset. Show a
@@ -1060,6 +1161,7 @@
       return;
     }
 
+    appendHistoryCollapseLink();
     for (var i = 0; i < items.length; i++) {
       historyList.appendChild(buildHistoryEntry(items[i]));
     }
@@ -1068,12 +1170,14 @@
   // One timeline card: meta row (status chip + time + model + elapsed + amount)
   // above an expandable <details> with the full payload blocks.
   function buildHistoryEntry(item) {
-    var entry = el('div', { className: 'history-entry' });
+    var isPending = item.ai_status === 'pending' || item.pending === true;
+    var entry = el('div', { className: 'history-entry' + (isPending ? ' history-entry-pending' : '') });
 
     // Meta row — status chip reuses the global .status-tag palette.
     var chipClass = 'status-info';
     var chipText = item.ai_status || '';
-    if (item.ai_status === 'succeeded') { chipClass = 'status-ok'; chipText = t('history.chipSuccess'); }
+    if (isPending) { chipClass = 'status-info'; chipText = t('history.chipPending'); }
+    else if (item.ai_status === 'succeeded') { chipClass = 'status-ok'; chipText = t('history.chipSuccess'); }
     else if (item.ai_status === 'failed') { chipClass = 'status-err'; chipText = t('history.chipFailed'); }
     else if (item.ai_status === 'duplicate') { chipClass = 'status-warn'; chipText = t('history.chipDuplicate'); }
 
@@ -1094,6 +1198,14 @@
     var details = el('details', { className: 'history-details' });
     details.appendChild(el('summary', null, t('history.details')));
     var hasDetails = false;
+
+    // Pending rows have none of the completion payloads yet — show the
+    // "processing" placeholder instead of a misleading "no details" box.
+    if (isPending) {
+      details.appendChild(el('p', { className: 'placeholder' }, t('history.pendingText')));
+      entry.appendChild(details);
+      return entry;
+    }
 
     if (item.error) {
       hasDetails = true;

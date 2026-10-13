@@ -242,3 +242,97 @@ def test_history_load_wired_into_init_and_refresh_button():
     assert re.search(
         r"historyRefreshBtn\.addEventListener\('click', loadHistory\)", js
     ), "history refresh button must be wired to loadHistory"
+
+
+def test_history_collapsed_bar_and_sentinel_present():
+    """
+    GIVEN app/static/admin.html with the Request History card
+    WHEN the source is scanned for the pinned-mode skeleton
+    THEN it contains the zero-height sentinel span above the card, the
+      collapsed summary bar, and the expand button inside the card
+    """
+    html = _read_static("admin.html")
+    sentinel_idx = html.index('id="history-pinned-sentinel"')
+    card_idx = html.index('id="history-section"')
+    bar_idx = html.index('id="history-collapsed-bar"')
+    btn_idx = html.index('id="history-expand-btn"')
+    assert sentinel_idx < card_idx, (
+        "the pinned sentinel span must sit immediately BEFORE the history card"
+    )
+    assert card_idx < bar_idx < btn_idx, (
+        "collapsed bar and expand button must live inside the history card"
+    )
+
+
+def test_history_pinned_mode_engine_exists():
+    """
+    GIVEN app/static/admin.js with the Request History section
+    WHEN the source is scanned for the pinned-mode engine
+    THEN it uses an IntersectionObserver (no timers) on the sentinel
+      AND defines renderHistoryCountsBar / applyHistoryPinned
+      AND the collapse condition is the conjunction of the physical pinned
+        state and the user NOT having expanded
+    """
+    js = _read_static("admin.js")
+    assert "history-pinned-sentinel" in js, "JS must reference the sentinel"
+    assert "IntersectionObserver" in js, "pinned detection must use IntersectionObserver"
+    assert "var historyPinned" in js and "var historyUserExpanded" in js
+    assert re.search(r"function\s+renderHistoryCountsBar\s*\(", js)
+    assert re.search(r"function\s+applyHistoryPinned\s*\(", js)
+    assert re.search(
+        r"historyPinned\s*&&\s*!historyUserExpanded", js
+    ), "collapse condition must be pinned AND not user-expanded"
+
+
+def test_history_pending_chip_rendered():
+    """
+    GIVEN app/static/admin.js with buildHistoryEntry
+    WHEN the function body (sliced from its declaration to the next history
+       helper) is scanned
+    THEN a pending item (ai_status === 'pending' OR item.pending === true)
+       renders the status-info pending chip and the pending placeholder in
+       the details block, instead of the regular payload blocks
+    """
+    js = _read_static("admin.js")
+    start = js.index("function buildHistoryEntry(")
+    end = js.index("function appendHistoryBlock(", start)
+    body = js[start:end]
+    assert "item.pending === true" in body, (
+        "buildHistoryEntry must treat item.pending === true as pending"
+    )
+    assert "t('history.chipPending')" in body, (
+        "pending rows must render the pending chip"
+    )
+    assert re.search(r"t\('history\.pendingText'\)", body), (
+        "pending rows must show the processing placeholder in the details block"
+    )
+    chip_idx = body.index("item.ai_status === 'pending' || item.pending === true")
+    succeeded_idx = body.index("item.ai_status === 'succeeded'")
+    assert chip_idx < succeeded_idx, (
+        "the pending branch must be evaluated before the succeeded branch"
+    )
+
+
+def test_history_i18n_new_keys_paired():
+    """
+    GIVEN app/static/admin.js with the I18N dictionary
+    WHEN the zh and en history.* blocks are scanned for the pinned-mode keys
+    THEN each key (chipSuccessShort / chipFailedShort / chipPendingShort /
+       expandBtn / collapseBtn) appears in BOTH blocks — mirrors the zh/en
+       parity gate with a targeted assertion so a one-sided edit is caught
+       with a clearer message than the full dictionary diff
+    """
+    js = _read_static("admin.js")
+    zh_start = js.index("zh: {")
+    zh_end = js.index("en: {", zh_start)
+    zh_block = js[zh_start:zh_end]
+    en_block = js[zh_end:js.index("};", zh_end)]
+    for key in [
+        "history.chipSuccessShort",
+        "history.chipFailedShort",
+        "history.chipPendingShort",
+        "history.expandBtn",
+        "history.collapseBtn",
+    ]:
+        assert f"'{key}':" in zh_block, f"zh I18N missing {key}"
+        assert f"'{key}':" in en_block, f"en I18N missing {key}"
