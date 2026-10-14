@@ -131,7 +131,7 @@ logger = logging.getLogger("feishu_webhook_service")
 # pairs an old script with a fresh HTML shell and breaks the page (observed:
 # history card stuck on "加载中", mixed bilingual strings). Bumping this value
 # changes the asset URLs, forcing every browser to re-fetch after a deploy.
-_STATIC_ASSET_VERSION = "2026-10-13-2"
+_STATIC_ASSET_VERSION = "2026-10-13-4"
 
 
 @app.get("/admin/ai")

@@ -112,3 +112,13 @@ _Auto-scaffolded by /start-work. Append new entries below - never overwrite._
 - 45vh 删除安全的前提：折叠态列表 display:none，展开态卡片回文档流（页面滚动而非卡内滚动）。CSS 里留了注释说明这个耦合，别再单独加回 max-height。
 - 测试计数 344 → 348（新增 4：collapsed-bar/sentinel 存在性、pinned 引擎、pending chip 切片、i18n 新 key 成对）。buildHistoryEntry 切片锚点：`function buildHistoryEntry(` → `function appendHistoryBlock(`。
 - 提交 99ebf2d。
+
+## Scroll-jank fix (pinned card) — 2026-10-14
+- **Root cause**: 0-height sentinel (`#history-pinned-sentinel { height: 0 }`) crossed viewport top at a different scroll offset than the sticky card's visual stick point. On small scrolls the observer fired `historyPinned=true` before the card actually stuck, triggering collapse → page height change → browser scroll anchoring fought the gesture ("scroll swallowed"). The `boundingClientRect.top < 0` (strict less-than) made it *more* sensitive, not less — any pixel above viewport triggered pin.
+- **Fix (3 changes)**:
+  1. `admin.css`: `#history-pinned-sentinel { height: 1px }` — aligns observer threshold with the card's visual stick point (1px offset, effectively zero difference).
+  2. `admin.css`: `#history-section { overflow-anchor: none }` — prevents browser from re-anchoring to the sticky card when its height changes during collapse/expand.
+  3. `admin.js`: observer now uses `e.boundingClientRect.top <= 0` (local var `e`, not stale loop variable) + `rootMargin: '0px 0px -1px 0px'` — negative bottom margin shrinks the intersection root so the sentinel fully exits before pin fires. The `<= 0` (not `< 0`) combined with the negative margin ensures the sentinel must be *fully* above viewport, not just partially.
+- **Verification**: `node --check` 0, `pytest -q` 348 passed.
+- **Asset version**: bumped `_STATIC_ASSET_VERSION` from `2026-10-13-2` → `2026-10-13-3` (cache-busting; stale `.js`/`.css` with old observer logic would reproduce the bug).
+- **Follow-up (2026-10-14)**: section-level `overflow-anchor: none` on `#history-section` was insufficient — the browser was anchoring to nodes *below* the section (status bar, profile cards), causing a scrollY oscillation when the card collapsed. The anchor node lives below the section; `overflow-anchor` is inherited, so it must be set on the scroller (`body`) level. Bumped asset version → `2026-10-13-4`.

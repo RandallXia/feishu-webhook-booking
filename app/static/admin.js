@@ -1078,14 +1078,17 @@
 
   if (historyPinnedSentinel && 'IntersectionObserver' in window) {
     var pinnedObserver = new IntersectionObserver(function(entries) {
-      // The sentinel sits immediately above the sticky card: once it has
-      // scrolled out ABOVE the viewport, the card is pinned at its sticky
-      // offset. (entries usually holds a single entry — take the last one.)
+      // Sentinel is a 1px block immediately above the sticky card; it
+      // leaves the viewport at the same scroll offset where the card
+      // visually sticks.  We only mark pinned when the sentinel is fully
+      // above the viewport (top <= 0) AND not intersecting, with a -1 px
+      // bottom rootMargin so small scroll amounts don't flap the state.
       for (var i = 0; i < entries.length; i++) {
-        historyPinned = !entries[i].isIntersecting && entries[i].boundingClientRect.top < 0;
+        var e = entries[i];
+        historyPinned = !e.isIntersecting && e.boundingClientRect.top <= 0;
       }
       applyHistoryPinned();
-    }, { threshold: 0 });
+    }, { threshold: 0, rootMargin: '0px 0px -1px 0px' });
     pinnedObserver.observe(historyPinnedSentinel);
   }
 
