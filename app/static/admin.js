@@ -477,6 +477,7 @@
     currentLang = (currentLang === 'zh') ? 'en' : 'zh';
     try { localStorage.setItem(LANG_KEY, currentLang); } catch (e) {}
     applyStaticI18n();
+    updateHistoryToggleLabel();
     // Stateful sections only render their data AFTER a successful api() call,
     // which requires a token; in setup mode (no token) these are hidden, so
     // the guarded calls below are no-ops there.
@@ -1023,16 +1024,18 @@
 
   // Pinned mode: while the history card is stuck (sticky) at the viewport top,
   // collapse the list into a counts summary so it can never push the config
-  // sections off-screen. A zero-height sentinel span placed just above the
-  // card flips when the card reaches its sticky offset. historyPinned tracks
-  // the physical stickiness (observer-owned); historyUserExpanded is the
-  // user's override (Expand/Collapse links) — collapsing happens only when
-  // the card is pinned AND the user has not opted out of the collapsed view.
+  // sections off-screen. A 1px sentinel span placed just above the card flips
+  // when the card reaches its sticky offset. historyPinned tracks the physical
+  // stickiness (observer-owned); historyCollapsed tracks the current display
+  // state (collapsed summary vs expanded list). Pinning auto-collapses (unless
+  // the user manually expanded while pinned); unpinning auto-restores the full
+  // list. A single toggle button in the controls row flips the state regardless
+  // of whether the card is pinned.
   var historyPinned = false;
-  var historyUserExpanded = false;
+  var historyCollapsed = false;
   var historyPinnedSentinel = document.getElementById('history-pinned-sentinel');
   var historyCollapsedBar = document.getElementById('history-collapsed-bar');
-  var historyExpandBtn = document.getElementById('history-expand-btn');
+  var historyToggleBtn = document.getElementById('history-toggle-btn');
   var lastHistoryCounts = { ok: 0, err: 0, pending: 0 };
 
   function historyCountsFrom(items) {
@@ -1059,43 +1062,53 @@
     historyCollapsedBar.insertBefore(chips, historyCollapsedBar.firstChild);
   }
 
-  function applyHistoryPinned() {
+  function applyHistoryCollapsed() {
     if (!historySection) return;
-    var collapsed = historyPinned && !historyUserExpanded;
-    if (collapsed) {
+    if (historyCollapsed) {
       historySection.classList.add('history-pinned');
       renderHistoryCountsBar();
       if (historyCollapsedBar) historyCollapsedBar.style.display = 'flex';
       if (historyList) historyList.style.display = 'none';
-      if (historyExpandBtn) historyExpandBtn.style.display = '';
     } else {
       historySection.classList.remove('history-pinned');
       if (historyCollapsedBar) historyCollapsedBar.style.display = 'none';
       if (historyList) historyList.style.display = '';
-      if (historyExpandBtn) historyExpandBtn.style.display = 'none';
+    }
+    updateHistoryToggleLabel();
+  }
+
+  function updateHistoryToggleLabel() {
+    if (historyToggleBtn) {
+      historyToggleBtn.textContent = historyCollapsed ? t('history.expandBtn') : t('history.collapseBtn');
     }
   }
 
   if (historyPinnedSentinel && 'IntersectionObserver' in window) {
+    var seenPinned = false;
     var pinnedObserver = new IntersectionObserver(function(entries) {
-      // Sentinel is a 1px block immediately above the sticky card; it
-      // leaves the viewport at the same scroll offset where the card
-      // visually sticks.  We only mark pinned when the sentinel is fully
-      // above the viewport (top <= 0) AND not intersecting, with a -1 px
-      // bottom rootMargin so small scroll amounts don't flap the state.
+      // Sentinel is a 1px block immediately above the sticky card; it leaves
+      // the viewport at the same scroll offset where the card visually sticks.
+      // Pin state flips only on TRANSITION (sentinel fully above viewport and
+      // not intersecting); a transition re-syncs the display state (pin →
+      // collapse, unpin → restore) without stomping manual toggles made
+      // between transitions.
       for (var i = 0; i < entries.length; i++) {
         var e = entries[i];
         historyPinned = !e.isIntersecting && e.boundingClientRect.top <= 0;
       }
-      applyHistoryPinned();
+      if (historyPinned !== seenPinned) {
+        seenPinned = historyPinned;
+        historyCollapsed = historyPinned;
+        applyHistoryCollapsed();
+      }
     }, { threshold: 0, rootMargin: '0px 0px -1px 0px' });
     pinnedObserver.observe(historyPinnedSentinel);
   }
 
-  if (historyExpandBtn) {
-    historyExpandBtn.addEventListener('click', function() {
-      historyUserExpanded = true;
-      applyHistoryPinned();
+  if (historyToggleBtn) {
+    historyToggleBtn.addEventListener('click', function() {
+      historyCollapsed = !historyCollapsed;
+      applyHistoryCollapsed();
     });
   }
 
@@ -1106,26 +1119,12 @@
   function showHistoryPending() {
     if (!historyList) return;
     while (historyList.firstChild) historyList.removeChild(historyList.firstChild);
-    appendHistoryCollapseLink();
     var row = el('div', { className: 'history-entry history-entry-pending' });
     var meta = el('div', { className: 'history-meta' });
     meta.appendChild(el('span', { className: 'status-tag status-info' }, t('history.pendingChip')));
     meta.appendChild(el('span', null, t('history.pendingText')));
     row.appendChild(meta);
     historyList.appendChild(row);
-  }
-
-  // Collapse link pinned to the top of the rendered list. Only meaningful
-  // while the card is physically pinned — applyHistoryPinned() re-collapses
-  // (and hides the list) when the user opts back into the summary view.
-  function appendHistoryCollapseLink() {
-    var link = el('a', { className: 'history-collapse-link', href: '#' }, t('history.collapseBtn'));
-    link.addEventListener('click', function(e) {
-      e.preventDefault();
-      historyUserExpanded = false;
-      applyHistoryPinned();
-    });
-    historyList.appendChild(link);
   }
 
   function loadHistory() {
@@ -1138,7 +1137,7 @@
       .then(function(data) {
         lastHistoryCounts = historyCountsFrom(data.items || []);
         renderHistory(data.items);
-        applyHistoryPinned();
+        applyHistoryCollapsed();
       })
       .catch(function(err) {
         // 404 = feature off: AI disabled or AI_HISTORY_DB_PATH unset. Show a
@@ -1164,7 +1163,6 @@
       return;
     }
 
-    appendHistoryCollapseLink();
     for (var i = 0; i < items.length; i++) {
       historyList.appendChild(buildHistoryEntry(items[i]));
     }

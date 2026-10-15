@@ -259,7 +259,5 @@ table td { font-size: 0.8rem; word-break: break-all; }
 #history-pinned-sentinel { display: block; height: 1px; }
 .history-collapsed-bar { display: none; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .history-collapsed-bar .counts-chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.history-expand-btn { padding: 4px 12px; font-size: 0.8rem; }
-.history-collapse-link { display: inline-block; font-size: 0.75rem; color: #0071e3; margin-bottom: 6px; text-decoration: none; }
 /* Pending rows are still being processed — visually de-emphasized. */
 .history-entry-pending { opacity: 0.75; }

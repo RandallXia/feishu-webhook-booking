@@ -248,19 +248,19 @@ def test_history_collapsed_bar_and_sentinel_present():
     """
     GIVEN app/static/admin.html with the Request History card
     WHEN the source is scanned for the pinned-mode skeleton
-    THEN it contains the zero-height sentinel span above the card, the
-      collapsed summary bar, and the expand button inside the card
+    THEN it contains the 1px sentinel span above the card, the
+      collapsed summary bar, and the toggle button inside the card
     """
     html = _read_static("admin.html")
     sentinel_idx = html.index('id="history-pinned-sentinel"')
     card_idx = html.index('id="history-section"')
     bar_idx = html.index('id="history-collapsed-bar"')
-    btn_idx = html.index('id="history-expand-btn"')
+    btn_idx = html.index('id="history-toggle-btn"')
     assert sentinel_idx < card_idx, (
         "the pinned sentinel span must sit immediately BEFORE the history card"
     )
     assert card_idx < bar_idx < btn_idx, (
-        "collapsed bar and expand button must live inside the history card"
+        "collapsed bar and toggle button must live inside the history card"
     )
 
 
@@ -269,19 +269,24 @@ def test_history_pinned_mode_engine_exists():
     GIVEN app/static/admin.js with the Request History section
     WHEN the source is scanned for the pinned-mode engine
     THEN it uses an IntersectionObserver (no timers) on the sentinel
-      AND defines renderHistoryCountsBar / applyHistoryPinned
-      AND the collapse condition is the conjunction of the physical pinned
-        state and the user NOT having expanded
+      AND defines renderHistoryCountsBar / applyHistoryCollapsed
+      AND the display state is driven by an explicit historyCollapsed flag
+        plus a single toggle button that flips it on click
+      AND pin-boundary transitions re-sync historyCollapsed to historyPinned
+        via a seenPinned guard so manual toggles between transitions survive
     """
     js = _read_static("admin.js")
     assert "history-pinned-sentinel" in js, "JS must reference the sentinel"
     assert "IntersectionObserver" in js, "pinned detection must use IntersectionObserver"
-    assert "var historyPinned" in js and "var historyUserExpanded" in js
+    assert "var historyPinned" in js and "var historyCollapsed" in js
     assert re.search(r"function\s+renderHistoryCountsBar\s*\(", js)
-    assert re.search(r"function\s+applyHistoryPinned\s*\(", js)
-    assert re.search(
-        r"historyPinned\s*&&\s*!historyUserExpanded", js
-    ), "collapse condition must be pinned AND not user-expanded"
+    assert re.search(r"function\s+applyHistoryCollapsed\s*\(", js)
+    assert re.search(r"historyCollapsed\s*=\s*historyPinned", js), (
+        "pin transition must re-sync the display state"
+    )
+    assert "historyCollapsed = !historyCollapsed" in js, (
+        "toggle button must flip the collapsed state on click"
+    )
 
 
 def test_history_pending_chip_rendered():
@@ -336,3 +341,46 @@ def test_history_i18n_new_keys_paired():
     ]:
         assert f"'{key}':" in zh_block, f"zh I18N missing {key}"
         assert f"'{key}':" in en_block, f"en I18N missing {key}"
+
+
+def test_history_toggle_button_single_position():
+    """
+    GIVEN app/static/admin.html + admin.js with the refactored history
+      collapse/expand interaction
+    WHEN the sources are scanned for old and new button elements and the
+      toggle wiring
+    THEN admin.html has exactly ONE id="history-toggle-btn" and ZERO
+       id="history-expand-btn" or class="history-collapse-link"
+      AND admin.js defines updateHistoryToggleLabel and calls it from both
+        the language-toggle handler and the toggle button click handler
+      AND admin.js does NOT contain appendHistoryCollapseLink
+    """
+    html = _read_static("admin.html")
+    assert html.count('id="history-toggle-btn"') == 1, (
+        "history-toggle-btn must appear exactly once for single-position toggle"
+    )
+    assert 'id="history-expand-btn"' not in html, (
+        "old history-expand-btn element must be removed"
+    )
+    assert 'class="history-collapse-link"' not in html, (
+        "old history-collapse-link class must be removed from HTML"
+    )
+
+    js = _read_static("admin.js")
+    assert "function updateHistoryToggleLabel(" in js, (
+        "JS must define updateHistoryToggleLabel helper"
+    )
+    # Called in the language toggle handler
+    lang_handler_start = js.index("langToggleBtn.addEventListener")
+    lang_handler_end = js.index("});", lang_handler_start) + 1
+    lang_handler = js[lang_handler_start:lang_handler_end]
+    assert "updateHistoryToggleLabel()" in lang_handler, (
+        "language toggle handler must call updateHistoryToggleLabel after applyStaticI18n"
+    )
+    # Called inside applyHistoryCollapsed
+    assert "updateHistoryToggleLabel();" in js, (
+        "updateHistoryToggleLabel must be called inside applyHistoryCollapsed"
+    )
+    assert "appendHistoryCollapseLink" not in js, (
+        "appendHistoryCollapseLink must be completely removed"
+    )
