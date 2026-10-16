@@ -246,15 +246,25 @@ table td { font-size: 0.8rem; word-break: break-all; }
 .history-block-title { display: block; font-size: 0.72rem; color: #86868b; margin-top: 8px; }
 .history-text { white-space: pre-wrap; word-break: break-word; background: #f5f5f7; border-radius: 6px; padding: 8px 10px; font-size: 0.78rem; margin-top: 4px; }
 .history-error { color: #c62828; font-size: 0.8rem; margin-top: 6px; }
-/* Pinned mode: while the history card is stuck at the viewport top, the list
-   is hidden and replaced by a counts summary bar; removing the old 45vh cap
-   is safe because the expanded list only shows when the card sits in normal
-   document flow (page scroll, no in-card scrolling needed). */
+/* History list: in normal flow it scrolls with the page (no max-height).
+   When the card is stuck AND expanded, the card is capped to the viewport
+   and the list scrolls internally — a sticky card taller than the viewport
+   would cut off every item below the fold, unreachable by page scroll. */
 #history-list {
   margin-top: 4px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
+}
+#history-section.history-stuck {
+  display: flex;
+  flex-direction: column;
+  max-height: 100vh;
+}
+#history-section.history-stuck #history-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 #history-pinned-sentinel { display: block; height: 1px; }
 .history-collapsed-bar { display: none; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }

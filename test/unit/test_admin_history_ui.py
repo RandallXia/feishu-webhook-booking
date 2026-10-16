@@ -384,3 +384,30 @@ def test_history_toggle_button_single_position():
     assert "appendHistoryCollapseLink" not in js, (
         "appendHistoryCollapseLink must be completely removed"
     )
+
+
+def test_history_stuck_expanded_internal_scroll():
+    """
+    GIVEN app/static/admin.css + admin.js with the stuck-and-expanded list mode
+    WHEN the sources are scanned for the internal-scroll wiring
+    THEN css scopes a viewport-height flex card to .history-stuck with the
+      list as a scrollable flex child (min-height 0), so a tall list stays
+      fully readable while the card is pinned
+      AND js toggles the history-stuck class on pin transitions
+    """
+    css = _read_static("admin.css")
+    assert "#history-section.history-stuck" in css, (
+        "css must scope the viewport-capped flex card to the stuck state"
+    )
+    assert "max-height: 100vh" in css, "stuck card must be capped to the viewport"
+    assert "#history-section.history-stuck #history-list" in css, (
+        "css must scope the internal-scroll rules to the stuck card's list"
+    )
+    assert "min-height: 0" in css, "flex child list needs min-height 0 to scroll"
+    js = _read_static("admin.js")
+    assert "classList.add('history-stuck')" in js, (
+        "observer must mark the card stuck on pin"
+    )
+    assert "classList.remove('history-stuck')" in js, (
+        "observer must unmark the card on unpin"
+    )

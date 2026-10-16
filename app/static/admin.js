@@ -1099,6 +1099,8 @@
       if (historyPinned !== seenPinned) {
         seenPinned = historyPinned;
         historyCollapsed = historyPinned;
+        if (historyPinned) historySection.classList.add('history-stuck');
+        else historySection.classList.remove('history-stuck');
         applyHistoryCollapsed();
       }
     }, { threshold: 0, rootMargin: '0px 0px -1px 0px' });
