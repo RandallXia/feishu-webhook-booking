@@ -1555,12 +1555,12 @@ async def config_targets_get(
     generation = describe.get("reload_generation", 0)
     config_valid = describe.get("config_valid", False)
 
-    # Fail-closed branch: get_snapshot raises / returns None. The route stays
+    # Fail-closed branch: get_snapshot raises. The route stays
     # 200 (mirrors GET /admin/config/profile) so admin tooling can render the
     # degraded diagnostics instead of a 503.
     try:
         snapshot = target_registry.get_snapshot()
-    except Exception:  # noqa: BLE001 — registry raises typed errors; degrade to 200
+    except TargetRegistryUnavailableError:
         return {
             "mode": describe.get("mode", "uninitialized"),
             "default_alias": None,
@@ -1584,10 +1584,10 @@ async def config_targets_get(
         for t in snapshot.targets_by_alias.values()
     ]
     return {
-        "mode": describe.get("mode", snapshot.mode),
-        "default_alias": describe.get("default_alias", snapshot.default_alias),
+        "mode": snapshot.mode,
+        "default_alias": snapshot.default_alias,
         "targets": targets,
-        "generation": generation,
+        "generation": snapshot.generation,
         "config_valid": config_valid,
     }
 
