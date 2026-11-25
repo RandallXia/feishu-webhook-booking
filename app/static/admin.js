@@ -158,6 +158,8 @@
       'extract.summaryFieldLabel': '摘要字段',
       'extract.summaryFieldHint': '提取表的「精简原始数据」回写字段',
       'extract.newAliasTitle': '新账本',
+      'extract.expandBtn': '展开',
+      'extract.collapseBtn': '收起',
       'extract.urlLabel': '飞书表 URL',
       'extract.parseUrlBtn': '解析 URL',
       'extract.tableLabel': '表',
@@ -358,6 +360,8 @@
       'extract.summaryFieldLabel': 'Summary Field',
       'extract.summaryFieldHint': 'Extract-table writeback field for 精简原始数据',
       'extract.newAliasTitle': 'New Alias',
+      'extract.expandBtn': 'Expand',
+      'extract.collapseBtn': 'Collapse',
       'extract.urlLabel': 'Feishu Table URL',
       'extract.parseUrlBtn': 'Parse URL',
       'extract.tableLabel': 'Table',
@@ -1458,9 +1462,20 @@
   // the default_alias card (server requires the default to exist).
   function renderAliasCard(target, defaultAlias, canDelete) {
     target = target || {};
-    var card = el('div', { className: 'card', 'data-alias': target.alias || '' });
-
-    card.appendChild(el('div', { className: 'card-title' }, target.alias || t('extract.newAliasTitle')));
+    var card = el('details', { className: 'card alias-card', 'data-alias': target.alias || '' });
+    card.open = !target.alias;
+    var header = el('summary', { className: 'card-title alias-card-header' });
+    var title = el('span', { className: 'alias-card-name' }, target.alias || t('extract.newAliasTitle'));
+    if (!target.alias) title.setAttribute('data-i18n', 'extract.newAliasTitle');
+    header.appendChild(title);
+    var toggle = el('span', { className: 'btn btn-secondary alias-card-toggle' });
+    toggle.appendChild(el('span', { className: 'alias-card-expand', 'data-i18n': 'extract.expandBtn' }, t('extract.expandBtn')));
+    toggle.appendChild(el('span', { className: 'alias-card-collapse', 'data-i18n': 'extract.collapseBtn' }, t('extract.collapseBtn')));
+    header.appendChild(toggle);
+    card.appendChild(header);
+    // Keep controls mounted so collapsing preserves edits and picker state.
+    var body = el('div', { className: 'alias-card-body' });
+    card.appendChild(body);
 
     var urlGroup = el('div', { className: 'form-group' });
     urlGroup.appendChild(el('label', null, t('extract.urlLabel')));
@@ -1474,7 +1489,7 @@
     urlGroup.appendChild(parseBtn);
     var parseStatus = el('div', { className: 'parse-status' });
     urlGroup.appendChild(parseStatus);
-    card.appendChild(urlGroup);
+    body.appendChild(urlGroup);
     parseBtn.addEventListener('click', function() { parseUrl(urlInput, card); });
 
     var appGroup = el('div', { className: 'form-group' });
@@ -1482,7 +1497,7 @@
     var appInput = el('input', { type: 'text', className: 'app-token-input', readonly: 'readonly' });
     appInput.value = target.app_token || '';
     appGroup.appendChild(appInput);
-    card.appendChild(appGroup);
+    body.appendChild(appGroup);
 
     var tblGroup = el('div', { className: 'form-group' });
     tblGroup.appendChild(el('label', null, t('extract.tableLabel')));
@@ -1498,7 +1513,7 @@
     tblGroup.appendChild(loadTblBtn);
     var tableStatus = el('div', { className: 'table-status' });
     tblGroup.appendChild(tableStatus);
-    card.appendChild(tblGroup);
+    body.appendChild(tblGroup);
     loadTblBtn.addEventListener('click', function() { loadTables(loadTblBtn, card); });
     tblSel.addEventListener('change', function() {
       var tblInput = card.querySelector('.table-id-input');
@@ -1519,7 +1534,7 @@
     var tblIdInput = el('input', { type: 'text', className: 'table-id-input', readonly: 'readonly' });
     tblIdInput.value = target.table_id || '';
     tblIdGroup.appendChild(tblIdInput);
-    card.appendChild(tblIdGroup);
+    body.appendChild(tblIdGroup);
 
     var recGroup = el('div', { className: 'form-group' });
     recGroup.appendChild(el('label', null, t('extract.recordLabel')));
@@ -1534,7 +1549,7 @@
     recList.style.overflowY = 'auto';
     recGroup.appendChild(loadRecBtn);
     recGroup.appendChild(recList);
-    card.appendChild(recGroup);
+    body.appendChild(recGroup);
     var recPageState = { page: 0, nextPageToken: null };
     loadRecBtn.addEventListener('click', function() {
       var appToken = card.querySelector('.app-token-input').value.trim();
@@ -1552,21 +1567,29 @@
     var aliasInput = el('input', { type: 'text', className: 'alias-input' });
     aliasInput.value = target.alias || '';
     aliasGroup.appendChild(aliasInput);
-    card.appendChild(aliasGroup);
+    body.appendChild(aliasGroup);
+    function updateAliasTitle() {
+      var alias = aliasInput.value.trim();
+      title.textContent = alias || t('extract.newAliasTitle');
+      if (alias) title.removeAttribute('data-i18n');
+      else title.setAttribute('data-i18n', 'extract.newAliasTitle');
+    }
+    aliasInput.addEventListener('input', updateAliasTitle);
+    aliasInput.addEventListener('change', updateAliasTitle);
 
     var yearGroup = el('div', { className: 'form-group' });
     yearGroup.appendChild(el('label', null, t('extract.yearLabel')));
     var yearInput = el('input', { type: 'text', className: 'year-input', placeholder: t('extract.yearPlaceholder') });
     yearInput.value = target.year != null ? String(target.year) : '';
     yearGroup.appendChild(yearInput);
-    card.appendChild(yearGroup);
+    body.appendChild(yearGroup);
 
     var ofnGroup = el('div', { className: 'form-group' });
     ofnGroup.appendChild(el('label', null, 'original_field_name'));
     var ofnInput = el('input', { type: 'text', className: 'ofn-input' });
     ofnInput.value = target.original_field_name || '原始信息';
     ofnGroup.appendChild(ofnInput);
-    card.appendChild(ofnGroup);
+    body.appendChild(ofnGroup);
 
     var enGroup = el('div', { className: 'form-group' });
     var enLabel = el('label');
@@ -1575,7 +1598,7 @@
     enLabel.appendChild(enCheckbox);
     enLabel.appendChild(document.createTextNode(' enabled'));
     enGroup.appendChild(enLabel);
-    card.appendChild(enGroup);
+    body.appendChild(enGroup);
 
     if (canDelete) {
       var delBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.deleteBtn'));
@@ -1583,11 +1606,11 @@
       delBtn.addEventListener('click', function() {
         if (targetsList) targetsList.removeChild(card);
       });
-      card.appendChild(delBtn);
+      body.appendChild(delBtn);
     } else {
       var notice = el('p', { className: 'placeholder' }, t('extract.defaultNotice'));
       notice.style.marginTop = '8px';
-      card.appendChild(notice);
+      body.appendChild(notice);
     }
 
     return card;
@@ -1633,6 +1656,8 @@
     var cards = targetsList.querySelectorAll('.card');
     if (cardIndex >= cards.length) return;
     var card = cards[cardIndex];
+    card.open = true;
+    if (!field) return;
     var sel = '.' + field + '-input';
     var fieldMap = {
       alias: 'alias', year: 'year', app_token: 'app-token',
@@ -1793,10 +1818,12 @@
           var loc = parseErrorPath(errors[i].path);
           if (!loc) continue;
           if (loc.defaultAlias) {
+            var cards = targetsList.querySelectorAll('.alias-card');
+            for (var j = 0; j < cards.length; j++) cards[j].open = true;
             showBanner(extractBanner, 'err', errors[i].message);
             continue;
           }
-          if (loc.field) markFieldError(loc.cardIndex, loc.field);
+          markFieldError(loc.cardIndex, loc.field);
         }
         if (!extractBanner.firstChild) {
           showBanner(extractBanner, 'err', t('extract.validationFailed'));

@@ -61,6 +61,22 @@ table td { font-size: 0.8rem; word-break: break-all; }
 #extract-banner.bar-warn { background: #fff3e0; color: #e65100; display: block; }
 #extract-banner.bar-info { background: #e3f2fd; color: #1565c0; display: block; }
 
+#targets-list .alias-card {
+  --alias-gap: 12px;
+  --alias-title-size: 1rem;
+}
+#targets-list .alias-card-header { display: flex; align-items: center; justify-content: space-between; gap: var(--alias-gap); margin: 0; padding: 0; border: 0; cursor: pointer; list-style: none; }
+#targets-list .alias-card-header::-webkit-details-marker { display: none; }
+#targets-list .alias-card-name { min-width: 0; overflow-wrap: anywhere; }
+#targets-list .alias-card-toggle { flex-shrink: 0; min-height: calc(var(--alias-title-size) * 2.75); }
+#targets-list .alias-card-header:hover .alias-card-toggle,
+#targets-list .alias-card-header:active .alias-card-toggle { background: #d2d2d7; }
+#targets-list .alias-card-header:focus-visible { outline: 2px solid #0071e3; outline-offset: 4px; border-radius: 8px; }
+#targets-list .alias-card-body { margin-top: var(--alias-gap); }
+#targets-list .alias-card-collapse,
+#targets-list .alias-card[open] .alias-card-expand { display: none; }
+#targets-list .alias-card[open] .alias-card-collapse { display: inline; }
+
 @media (max-width: 640px) { .key-value { grid-template-columns: 100px 1fr; } }
 
 /* ─── Bill section (todo 3) ────────────────────────────────────────────── */
