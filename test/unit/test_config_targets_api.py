@@ -33,6 +33,7 @@ from app.target_registry import (
     TargetRegistry,
     TargetRegistryConfigError,
     TargetRegistrySnapshot,
+    TargetRegistryUnavailableError,
 )
 
 
@@ -155,7 +156,7 @@ def _mock_registry_fail_closed() -> MagicMock:
             "source_path": "/tmp/feishu-targets.toml",
         }
     )
-    registry.get_snapshot = MagicMock(side_effect=Exception("unavailable"))
+    registry.get_snapshot = MagicMock(side_effect=TargetRegistryUnavailableError("unavailable"))
     registry.reload = MagicMock(side_effect=TargetRegistryConfigError("still bad"))
     registry.maybe_reload = MagicMock(return_value=None)
     return registry

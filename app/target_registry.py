@@ -201,7 +201,7 @@ class TargetRegistry:
         )
         return self.describe()
 
-    def resolve(self, book_alias: str | None, year: int | None) -> FeishuTargetConfig:
+    def get_snapshot(self) -> TargetRegistrySnapshot:
         with self._lock:
             snapshot = self._snapshot
             config_valid = self._config_valid
@@ -210,6 +210,10 @@ class TargetRegistry:
             raise TargetRegistryUnavailableError("target registry is not loaded")
         if not config_valid:
             raise TargetRegistryUnavailableError("target registry is temporarily unavailable")
+        return snapshot
+
+    def resolve(self, book_alias: str | None, year: int | None) -> FeishuTargetConfig:
+        snapshot = self.get_snapshot()
 
         if book_alias and year is not None:
             alias_target = snapshot.targets_by_alias.get(book_alias)
