@@ -92,7 +92,7 @@ def _stub_snapshot() -> MagicMock:
     return snapshot
 
 
-def _mock_registry_healthy(generation: int = 1) -> AsyncMock:
+def _mock_registry_healthy(generation: int = 1, profile_file: Path | None = None) -> AsyncMock:
     state = {"generation": generation}
 
     def _get_status() -> dict:
@@ -108,11 +108,24 @@ def _mock_registry_healthy(generation: int = 1) -> AsyncMock:
         state["generation"] += 1
         return _get_status()
 
+    def _install(profile, whitelists, temporary_file, expected_generation):
+        assert expected_generation == state["generation"]
+        assert profile_file is not None
+        temporary_file.replace(profile_file)
+        state["generation"] += 1
+        snapshot = _stub_snapshot()
+        snapshot.profile = profile
+        snapshot.option_whitelists = whitelists
+        snapshot.generation = state["generation"]
+        registry.get_snapshot.return_value = snapshot
+        return snapshot
+
     registry = AsyncMock()
     registry.maybe_reload = AsyncMock(return_value=None)
     registry.get_snapshot = MagicMock(return_value=_stub_snapshot())
     registry.get_status = MagicMock(side_effect=_get_status)
     registry.reload = AsyncMock(side_effect=_reload)
+    registry.install_candidate = MagicMock(side_effect=_install)
     return registry
 
 
@@ -133,7 +146,16 @@ def _mock_registry_fail_closed() -> AsyncMock:
 
 
 def _mock_feishu() -> AsyncMock:
-    return AsyncMock()
+    fields = {
+        spec.feishu_field: {
+            "type": {"text": 1, "passthrough": 1, "number": 2,
+                     "single_select": 3, "date": 5}[spec.type],
+            "property": {"options": [{"name": option}
+                         for option in _WHITELISTS.get(spec.feishu_field, set())]},
+        }
+        for spec in _PROFILE_FIELDS
+    }
+    return AsyncMock(list_fields=AsyncMock(return_value=fields))
 
 
 def _profile_dict() -> dict:
@@ -361,10 +383,10 @@ async def test_profile_get_then_put_round_trip_writes_file(monkeypatch, profile_
        AND validate_profile_candidate returns no errors
     THEN the PUT response status is 200 + success=True + generation=2
       AND a .bak file was created with the ORIGINAL content
-      AND ai_registry.reload(force=True) was awaited
+      AND the validated profile is installed
     """
     from app import main as main_mod
-    from app.toml_writer import dump_profile
+    from app.ai_profile import parse_profile_text
 
     monkeypatch.setattr(
         main_mod, "validate_profile_candidate",
@@ -372,7 +394,7 @@ async def test_profile_get_then_put_round_trip_writes_file(monkeypatch, profile_
     )
 
     original_content = profile_file.read_text(encoding="utf-8")
-    registry = _mock_registry_healthy(generation=1)
+    registry = _mock_registry_healthy(generation=1, profile_file=profile_file)
 
     async with lifespan(app):
         app.state.settings = _enabled_settings(profile_file=profile_file)
@@ -425,9 +447,8 @@ async def test_profile_get_then_put_round_trip_writes_file(monkeypatch, profile_
     assert bak_path.is_file()
     assert bak_path.read_text(encoding="utf-8") == original_content
 
-    # reload was force-called.
-    registry.reload.assert_awaited_once()
-    assert registry.reload.await_args.kwargs.get("force") is True
+    assert parse_profile_text(profile_file.read_text(encoding="utf-8")) == _PROFILE
+    registry.install_candidate.assert_called_once()
 
 
 # ─── 3. 422 path locator — fields[i].<field> shape ──────────────────────────
@@ -472,7 +493,7 @@ async def test_profile_put_422_fields_path_error_shape(monkeypatch, profile_file
     assert body["detail"]["errors"] == errors
     # File untouched.
     assert profile_file.read_text(encoding="utf-8") == original_content
-    registry.reload.assert_not_awaited()
+    registry.install_candidate.assert_not_called()
 
 
 async def test_profile_put_422_extract_summary_field_path(monkeypatch, profile_file):

@@ -16,13 +16,14 @@ transactional flow. Design constraints:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 
 from .ai_extractor import AiExtractor, AiExtractorError, ExtractionResult
-from .ai_profile import AiProfile, build_field_prompts
+from .ai_profile import AiDestinationContext, AiProfile, build_field_prompts
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import encode_fields
 from .target_registry import FeishuTargetConfig
@@ -42,58 +43,6 @@ class PipelineResult:
     error: str | None = None
 
 
-class _OptionWhitelistCache:
-    """Lazy cache for bill-table single_select option whitelists.
-
-    Wave 1 bridge — deleted in todo 8 when AiProfileRegistry takes over and
-    exposes whitelists from a pre-loaded snapshot. Fetches outside the lock,
-    swaps inside the lock.
-    """
-
-    def __init__(self, feishu: FeishuClient) -> None:
-        self._feishu = feishu
-        self._cache: dict[str, set[str]] | None = None
-        self._lock = threading.Lock()
-
-    async def get(self, profile: AiProfile) -> dict[str, set[str]]:
-        with self._lock:
-            cached = self._cache
-        if cached is not None:
-            return cached
-
-        fields_map = await self._feishu.list_fields(
-            profile.bill_app_token, profile.bill_table_id
-        )
-        whitelists = self._extract_whitelists(fields_map)
-        with self._lock:
-            if self._cache is None:
-                self._cache = whitelists
-            return self._cache
-
-    @staticmethod
-    def _extract_whitelists(
-        fields_map: dict[str, dict],
-    ) -> dict[str, set[str]]:
-        whitelists: dict[str, set[str]] = {}
-        for field_name, field_def in fields_map.items():
-            if not isinstance(field_def, dict):
-                continue
-            prop = field_def.get("property")
-            if not isinstance(prop, dict):
-                continue
-            options = prop.get("options")
-            if not isinstance(options, list):
-                continue
-            names = {
-                opt.get("name")
-                for opt in options
-                if isinstance(opt, dict) and isinstance(opt.get("name"), str)
-            }
-            if names:
-                whitelists[field_name] = names
-        return whitelists
-
-
 class AiPipeline:
     def __init__(
         self,
@@ -106,18 +55,16 @@ class AiPipeline:
         self._feishu = feishu
         self._dedup: dict[str, float] = {}
         self._dedup_lock = threading.Lock()
-        self._whitelist_cache = _OptionWhitelistCache(feishu)
 
     async def run(
         self,
         original_text: str,
         target: FeishuTargetConfig,
-        profile: AiProfile,
-        option_whitelists: dict[str, set[str]] | None = None,
+        context: AiDestinationContext,
     ) -> PipelineResult:
         try:
             return await self._run_impl(
-                original_text, target, profile, option_whitelists
+                original_text, target, context
             )
         except Exception:
             logger.exception(
@@ -136,11 +83,11 @@ class AiPipeline:
         self,
         original_text: str,
         target: FeishuTargetConfig,
-        profile: AiProfile,
-        option_whitelists: dict[str, set[str]] | None,
+        context: AiDestinationContext,
     ) -> PipelineResult:
+        profile = context.snapshot.profile
         dedup_key = hashlib.sha256(
-            f"{target.alias}:{original_text}".encode()
+            json.dumps([target.alias, context.bill_app_token, context.bill_table_id, original_text.strip()], ensure_ascii=False).encode()
         ).hexdigest()
 
         ttl = self._settings.ai_dedup_ttl_seconds
@@ -159,15 +106,7 @@ class AiPipeline:
                 dedup_hit=True,
             )
 
-        # Resolve whitelists BEFORE building field_prompts (single_select option
-        # injection needs the whitelist). Production path always provides
-        # option_whitelists from the registry snapshot; the cache fallback is
-        # a Wave-1 bridge for tests that don't pass them.
-        if option_whitelists is None:
-            whitelists = await self._whitelist_cache.get(profile)
-        else:
-            whitelists = option_whitelists
-
+        whitelists = context.option_whitelists
         field_prompts = build_field_prompts(profile, whitelists)
 
         start = time.time()
@@ -259,8 +198,8 @@ class AiPipeline:
         try:
             bill_record_id = await self._feishu.create_record(
                 bill_fields,
-                profile.bill_app_token,
-                profile.bill_table_id,
+                context.bill_app_token,
+                context.bill_table_id,
             )
         except FeishuClientError as exc:
             logger.warning(

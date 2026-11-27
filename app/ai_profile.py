@@ -16,15 +16,21 @@ snapshot reference swap INSIDE the lock.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import tomllib
+import anyio
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Literal
 
 from .config import Settings
 from .feishu_client import FeishuClient, FeishuClientError
 from .field_codec import FieldSpec
+from .target_registry import FeishuTargetConfig
 
 
 logger = logging.getLogger("feishu_webhook_service.ai_profile")
@@ -191,6 +197,35 @@ def parse_profile(path: Path) -> AiProfile:
     return parse_profile_text(path.read_text(encoding="utf-8"))
 
 
+def validate_bill_schema(
+    profile: AiProfile, fields_map: dict[str, dict], *, require_types: bool = True
+) -> list[dict]:
+    """Validate shared bill mappings against one destination's field schema."""
+    whitelists = _extract_whitelists(fields_map)
+    errors: list[dict] = []
+    field_types = {"text": 1, "passthrough": 1, "number": 2, "single_select": 3, "date": 5}
+    ui_types = {"text": "text", "passthrough": "text", "number": "number", "single_select": "singleselect", "date": "datetime"}
+    for index, spec in enumerate(profile.fields):
+        if spec.target != "bill":
+            continue
+        definition = fields_map.get(spec.feishu_field)
+        path = f"fields[{index}].feishu_field"
+        if not isinstance(definition, dict):
+            errors.append({"path": path, "message": f"bill field {spec.feishu_field!r} (ai_key={spec.ai_key!r}) not found in bill table fields list"})
+        else:
+            code = definition.get("type")
+            ui_type = str(definition.get("ui_type") or "").strip().lower()
+            if ui_type:
+                matches = ui_type.endswith(ui_types[spec.type]) or (spec.type == "date" and ui_type.endswith("date"))
+            else:
+                matches = code == field_types[spec.type]
+            if (require_types or code is not None or ui_type) and not matches:
+                errors.append({"path": path, "message": f"bill field {spec.feishu_field!r} has incompatible type for {spec.type}"})
+        if spec.type == "single_select" and spec.fallback not in whitelists.get(spec.feishu_field, set()):
+            errors.append({"path": f"fields[{index}].fallback", "message": f"single_select field {spec.feishu_field!r} fallback {spec.fallback!r} is not in the available options"})
+    return errors
+
+
 async def validate_profile_candidate(
     profile_text: str,
     feishu: FeishuClient,
@@ -241,47 +276,7 @@ async def validate_profile_candidate(
 
     whitelists = _extract_whitelists(bill_fields_map)
 
-    # Collect ALL defects — the UI shows them together so the user can fix the
-    # whole profile at once (unlike the registry, which fail-fast raises on
-    # the first single_select problem). Bill-side check expanded beyond
-    # single_select: a misnamed text/number/date/passthrough field is also a
-    # defect here, since this is the dry-run "does the profile fit the live
-    # tables" verdict.
-    bill_field_names = set(bill_fields_map.keys())
-    for i, spec in enumerate(profile.fields):
-        if spec.target != "bill":
-            continue
-        if spec.feishu_field not in bill_field_names:
-            errors.append({
-                "path": f"fields[{i}].feishu_field",
-                "message": (
-                    f"bill field {spec.feishu_field!r} (ai_key={spec.ai_key!r}) "
-                    f"not found in bill table fields list"
-                ),
-            })
-            # Don't `continue` — a missing field still leaves its single_select
-            # options undefined, which is itself a defect the UI should surface
-            # (collect-all semantics: both the missing field name AND the
-            # fallback-without-options errors are real, distinct problems).
-        if spec.type == "single_select":
-            options = whitelists.get(spec.feishu_field)
-            if not spec.fallback:
-                errors.append({
-                    "path": f"fields[{i}].fallback",
-                    "message": (
-                        f"single_select field {spec.feishu_field!r} "
-                        f"(ai_key={spec.ai_key!r}) has no fallback"
-                    ),
-                })
-            elif options is None or spec.fallback not in options:
-                errors.append({
-                    "path": f"fields[{i}].fallback",
-                    "message": (
-                        f"single_select field {spec.feishu_field!r} "
-                        f"fallback {spec.fallback!r} is not in the available "
-                        f"options"
-                    ),
-                })
+    errors.extend(validate_bill_schema(profile, bill_fields_map, require_types=False))
 
     # Extract list_fields is NOT fail-closed — a bill-side valid candidate
     # still surfaces the extract error so the UI can show it.
@@ -327,15 +322,24 @@ class AiProfileSnapshot:
     """
 
     profile: AiProfile
-    option_whitelists: dict[str, set[str]]
+    option_whitelists: Mapping[str, Set[str]]
     loaded_at: float
     source_mtime: float | None
     generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class AiDestinationContext:
+    snapshot: AiProfileSnapshot
+    bill_app_token: str
+    bill_table_id: str
+    source: Literal["target", "profile"]
+    option_whitelists: Mapping[str, frozenset[str]]
+
+
 def build_field_prompts(
     profile: AiProfile,
-    option_whitelists: dict[str, set[str]],
+    option_whitelists: Mapping[str, Set[str]],
 ) -> dict[str, str]:
     """Build field_prompts dict, injecting single_select option constraints.
 
@@ -401,17 +405,16 @@ class AiProfileRegistry:
         self._lock = threading.Lock()
         self._snapshot: AiProfileSnapshot | None = None
         self._generation = 0
+        self._load_sequence = 0
         self._last_reload_check_at = 0.0
         self._last_reload_error: str | None = None
         self._config_valid = True
+        self._contexts: dict[tuple[int, str, str], Mapping[str, frozenset[str]]] = {}
+        self._context_locks: dict[tuple[int, str, str], anyio.Lock] = {}
 
     async def load_initial(self) -> None:
         """Startup load — fail-fast: raises on error (mirrors TargetRegistry.load_initial)."""
-        snapshot = await self._load_snapshot()
-        with self._lock:
-            self._snapshot = snapshot
-            self._config_valid = True
-            self._last_reload_error = None
+        await self._load_snapshot()
 
     async def maybe_reload(self) -> None:
         """Throttled mtime check. No-op when interval hasn't elapsed or mtime unchanged.
@@ -453,10 +456,8 @@ class AiProfileRegistry:
             return self.get_status()
 
         snapshot = await self._load_snapshot()
-        with self._lock:
-            self._snapshot = snapshot
-            self._config_valid = True
-            self._last_reload_error = None
+        if snapshot is None:
+            return self.get_status()
 
         logger.info(
             "ai profile registry reloaded fields=%s generation=%s",
@@ -477,6 +478,65 @@ class AiProfileRegistry:
             )
         return snapshot
 
+    def install_candidate(
+        self, profile: AiProfile, whitelists: Mapping[str, Set[str]],
+        temporary_file: Path, expected_generation: int,
+    ) -> AiProfileSnapshot:
+        """Replace the file and publish the validated snapshot under one lock."""
+        self.validate_bill_whitelists(profile, whitelists)
+        frozen = MappingProxyType({name: frozenset(values) for name, values in whitelists.items()})
+        mtime = temporary_file.stat().st_mtime
+        with self._lock:
+            if not self._config_valid or self._snapshot is None or self._snapshot.generation != expected_generation:
+                raise AiProfileRegistryUnavailableError("profile changed during save")
+            snapshot = AiProfileSnapshot(profile, frozen, time.time(), mtime, self._generation + 1)
+            os.replace(temporary_file, self._settings.ai_profile_file)
+            self._load_sequence += 1
+            self._generation = snapshot.generation
+            self._snapshot = snapshot
+            self._contexts.clear()
+            self._config_valid = True
+            self._last_reload_error = None
+            return snapshot
+
+    async def get_context(
+        self, snapshot: AiProfileSnapshot, target: FeishuTargetConfig
+    ) -> AiDestinationContext:
+        """Resolve and validate a destination using the caller's pinned snapshot."""
+        app_token = target.bill_app_token
+        table_id = target.bill_table_id
+        if app_token is None and table_id is None:
+            app_token, table_id = snapshot.profile.bill_app_token, snapshot.profile.bill_table_id
+            source = "profile"
+        else:
+            source = "target"
+            if not isinstance(app_token, str) or not app_token.strip() or not isinstance(table_id, str) or not table_id.strip():
+                raise AiProfileRegistryUnavailableError("invalid bill destination override")
+            app_token, table_id = app_token.strip(), table_id.strip()
+
+        key = (snapshot.generation, app_token, table_id)
+        with self._lock:
+            lock = self._context_locks.setdefault(key, anyio.Lock())
+        async with lock:
+            with self._lock:
+                whitelists = self._contexts.get(key)
+            if whitelists is None:
+                try:
+                    fields_map = await self._feishu.list_fields(app_token, table_id)
+                    errors = validate_bill_schema(snapshot.profile, fields_map)
+                    if errors:
+                        raise ProfileConfigError(errors[0]["message"])
+                    options = _extract_whitelists(fields_map)
+                    self.validate_bill_whitelists(snapshot.profile, options)
+                    whitelists = MappingProxyType({name: frozenset(values) for name, values in options.items()})
+                except (ProfileConfigError, FeishuClientError) as exc:
+                    logger.warning("ai destination validation failed alias=%s error_type=%s", target.alias, type(exc).__name__)
+                    raise AiProfileRegistryUnavailableError("ai bill destination is temporarily unavailable") from exc
+                with self._lock:
+                    if self._snapshot is snapshot and self._config_valid:
+                        self._contexts[key] = whitelists
+            return AiDestinationContext(snapshot, app_token, table_id, source, whitelists)
+
     def get_status(self) -> dict[str, object]:
         """NON-raising diagnostic accessor (analog of TargetRegistry.describe)."""
         with self._lock:
@@ -493,10 +553,15 @@ class AiProfileRegistry:
                 ),
             }
 
-    async def _load_snapshot(self) -> AiProfileSnapshot:
+    async def _load_snapshot(self) -> AiProfileSnapshot | None:
         """Assemble a new snapshot. On error: set fail-closed flags + re-raise."""
+        with self._lock:
+            self._load_sequence += 1
+            sequence = self._load_sequence
         try:
             profile = parse_profile(self._settings.ai_profile_file)  # type: ignore[arg-type]
+            profile_file = self._settings.ai_profile_file
+            source_mtime = profile_file.stat().st_mtime if profile_file else None
 
             # Only the bill table needs option whitelists — the extract table
             # write is always text (no single_select options to guard).
@@ -504,31 +569,38 @@ class AiProfileRegistry:
                 profile.bill_app_token, profile.bill_table_id
             )
             whitelists = _extract_whitelists(fields_map)
-            self._validate_whitelists(profile, whitelists)
+            self.validate_bill_whitelists(profile, whitelists)
 
-            self._generation += 1
-            profile_file = self._settings.ai_profile_file
-            source_mtime = profile_file.stat().st_mtime if profile_file else None
-            return AiProfileSnapshot(
-                profile=profile,
-                option_whitelists=whitelists,
-                loaded_at=time.time(),
-                source_mtime=source_mtime,
-                generation=self._generation,
-            )
+            with self._lock:
+                if sequence != self._load_sequence:
+                    return None
+                self._generation += 1
+                snapshot = AiProfileSnapshot(
+                    profile=profile,
+                    option_whitelists=MappingProxyType({name: frozenset(values) for name, values in whitelists.items()}),
+                    loaded_at=time.time(),
+                    source_mtime=source_mtime,
+                    generation=self._generation,
+                )
+                self._snapshot = snapshot
+                self._contexts.clear()
+                self._config_valid = True
+                self._last_reload_error = None
+                return snapshot
         except (ProfileConfigError, FeishuClientError) as exc:
             # Fail-closed: pollute-nothing guarantee. A bad whitelist or network
             # failure means we cannot guarantee single_select values land inside
             # real options, so the registry refuses to serve.
             with self._lock:
-                self._config_valid = False
-                self._last_reload_error = str(exc)
+                if sequence == self._load_sequence:
+                    self._config_valid = False
+                    self._last_reload_error = str(exc)
             logger.error("ai profile registry reload failed error=%s", exc)
             raise
 
     @staticmethod
-    def _validate_whitelists(
-        profile: AiProfile, whitelists: dict[str, set[str]]
+    def validate_bill_whitelists(
+        profile: AiProfile, whitelists: Mapping[str, Set[str]]
     ) -> None:
         """Fail-closed validation for every single_select spec.
 

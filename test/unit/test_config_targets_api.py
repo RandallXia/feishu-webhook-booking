@@ -17,10 +17,11 @@
 from __future__ import annotations
 
 import errno
+import asyncio
 import tomllib
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -372,7 +373,7 @@ def _target_dict(
     }
 
 
-async def test_put_targets_happy_full_replace_add_modify_delete(targets_file):
+async def test_put_targets_happy_full_replace_add_modify_delete(targets_file, monkeypatch):
     """
     GIVEN a dynamic-mode registry (generation=1) + a 2-alias file (2025, 2026)
        AND a PUT body with 3 aliases: keep 2026 (modified app_token), drop 2025,
@@ -382,20 +383,16 @@ async def test_put_targets_happy_full_replace_add_modify_delete(targets_file):
       AND response.success is True + response.generation == 2 (reloaded)
       AND a .bak file was created with the ORIGINAL content
       AND the file now contains exactly the 3 new targets (dump_targets output)
-      AND target_registry.reload(force=True) was called
+       AND the new snapshot is installed without reloading
     """
     from app.toml_writer import dump_targets
 
     original_content = targets_file.read_text(encoding="utf-8")
 
-    # Snapshot reflects the OLD file (2 aliases) so GET would show 2; the PUT
-    # replaces the file then reload bumps generation to 2. The mock's reload
-    # does NOT re-read the file (it just bumps generation), so we keep the
-    # snapshot as the pre-PUT state.
-    t2026_old = FeishuTargetConfig("2026", 2026, "bascn_2026", "tbl_2026", "rec_2026", "原始信息", True)
-    t2025_old = FeishuTargetConfig("2025", 2025, "bascn_2025", "tbl_2025", "rec_2025", "原始信息", True)
-    snap = _snapshot([t2025_old, t2026_old], default_alias="2026", generation=1)
-    registry = _mock_registry_healthy(snap, generation=1)
+    settings = _dynamic_settings(targets_file)
+    registry = TargetRegistry(settings)
+    registry.load_initial()
+    monkeypatch.setattr(registry, "reload", MagicMock(side_effect=AssertionError("unexpected reload")))
 
     new_targets = [
         _target_dict("2026", year=2026, app_token="bascn_MODIFIED"),
@@ -404,7 +401,7 @@ async def test_put_targets_happy_full_replace_add_modify_delete(targets_file):
     ]
 
     async with lifespan(app):
-        app.state.settings = _dynamic_settings(targets_file=targets_file)
+        app.state.settings = settings
         app.state.target_registry = registry
 
         async with httpx.AsyncClient(
@@ -458,7 +455,169 @@ async def test_put_targets_happy_full_replace_add_modify_delete(targets_file):
     }
     assert written == dump_targets(expected_dump_input)
 
-    registry.reload.assert_called_once_with(force=True)
+    assert registry.get_snapshot().generation == 2
+    assert registry.resolve("2026", 2026).app_token == "bascn_MODIFIED"
+    assert registry.get_snapshot().source_mtime == targets_file.stat().st_mtime
+    registry.reload.assert_not_called()
+
+
+async def test_target_override_round_trip_and_clear(targets_file):
+    settings = _dynamic_settings(targets_file)
+    registry = TargetRegistry(settings)
+    registry.load_initial()
+    target = _target_dict("2026", year=2026)
+    target.update(bill_app_token=" bill-base ", bill_table_id=" bill-table ")
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = registry
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            saved = await client.put("/admin/config/targets", json=_put_body([target], "2026", registry.get_snapshot().generation), headers={"X-Admin-Token": ADMIN_TOKEN})
+            loaded = await client.get("/admin/config/targets", headers={"X-Admin-Token": ADMIN_TOKEN})
+            cleared = dict(target)
+            del cleared["bill_app_token"], cleared["bill_table_id"]
+            saved_clear = await client.put("/admin/config/targets", json=_put_body([cleared], "2026", registry.get_snapshot().generation), headers={"X-Admin-Token": ADMIN_TOKEN})
+            loaded_clear = await client.get("/admin/config/targets", headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert saved.status_code == saved_clear.status_code == 200
+    assert loaded.json()["targets"][0]["bill_app_token"] == "bill-base"
+    assert loaded.json()["targets"][0]["bill_table_id"] == "bill-table"
+    assert "bill_app_token" not in loaded_clear.json()["targets"][0]
+    assert "bill_table_id" not in tomllib.loads(targets_file.read_text(encoding="utf-8"))["targets"]["2026"]
+
+
+async def test_target_save_does_not_query_schema_after_replace(targets_file, monkeypatch):
+    from app import target_registry as target_registry_module
+    from app.ai_profile import AiProfile, AiProfileSnapshot
+    from app.field_codec import FieldSpec
+
+    settings = replace(_dynamic_settings(targets_file), ai_enabled=True)
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    profile = AiProfile("prompt", "summary", "bill", "bill-table", (
+        FieldSpec("summary", "summary", "text", "extract"),
+        FieldSpec("amount", "amount", "number", "bill"),
+    ))
+    registry = MagicMock()
+    registry.get_snapshot.return_value = AiProfileSnapshot(profile, {}, 0.0, None, 1)
+    replaced = False
+    real_replace = target_registry_module.os.replace
+
+    def replace_file(src, dst):
+        nonlocal replaced
+        real_replace(src, dst)
+        replaced = True
+
+    async def list_fields(app_token, table_id):
+        assert not replaced
+        return {"summary": {"type": 1}, "amount": {"type": 2}}
+
+    feishu = MagicMock()
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    monkeypatch.setattr(target_registry_module.os, "replace", replace_file)
+    monkeypatch.setattr(targets, "reload", MagicMock(side_effect=AssertionError("unexpected reload")))
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.put("/admin/config/targets", json=_put_body([_target_dict("2026", year=2026)], "2026"), headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 200
+    assert replaced
+    assert feishu.list_fields.await_count > 0
+    assert response.json()["generation"] == targets.get_snapshot().generation == 2
+
+
+async def test_target_partial_override_rejected_without_write(targets_file):
+    settings = _dynamic_settings(targets_file)
+    registry = TargetRegistry(settings)
+    registry.load_initial()
+    original = targets_file.read_bytes()
+    target = _target_dict("2026", year=2026)
+    target["bill_app_token"] = "bill-base"
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = registry
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.put("/admin/config/targets", json=_put_body([target], "2026", registry.get_snapshot().generation), headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["path"] == "targets[0].bill_table_id"
+    assert targets_file.read_bytes() == original
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_target_save_rejects_profile_generation_change_during_validation(targets_file, unavailable):
+    from app.ai_profile import AiProfile, AiProfileRegistryUnavailableError, AiProfileSnapshot
+    from app.field_codec import FieldSpec
+
+    settings = replace(_dynamic_settings(targets_file), ai_enabled=True)
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    profile = AiProfile("prompt", "summary", "bill", "bill-table", (
+        FieldSpec("summary", "summary", "text", "extract"),
+        FieldSpec("amount", "amount", "number", "bill"),
+    ))
+    snapshot = AiProfileSnapshot(profile, {}, 0.0, None, 1)
+    current = [snapshot]
+    registry = MagicMock()
+    registry.get_snapshot.side_effect = lambda: current[0]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def list_fields(app_token, table_id):
+        started.set()
+        await release.wait()
+        return {"summary": {"type": 1}, "amount": {"type": 2}}
+
+    feishu = MagicMock()
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    before = targets_file.read_bytes()
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            request = asyncio.create_task(client.put("/admin/config/targets", json=_put_body([_target_dict("2026", year=2026)], "2026", targets.get_snapshot().generation), headers={"X-Admin-Token": ADMIN_TOKEN}))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            if unavailable:
+                registry.get_snapshot.side_effect = AiProfileRegistryUnavailableError("unavailable")
+            else:
+                current[0] = replace(snapshot, generation=2)
+            release.set()
+            response = await asyncio.wait_for(request, timeout=2)
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["code"] == "STALE_WRITE"
+    assert targets_file.read_bytes() == before
+
+
+async def test_target_save_rejects_incompatible_override_without_writing(targets_file):
+    from app.ai_profile import AiProfile, AiProfileSnapshot
+    from app.field_codec import FieldSpec
+
+    settings = replace(_dynamic_settings(targets_file), ai_enabled=True)
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    profile = AiProfile("prompt", "summary", "global", "global-table", (
+        FieldSpec("summary", "summary", "text", "extract"),
+        FieldSpec("amount", "amount", "number", "bill"),
+    ))
+    registry = MagicMock()
+    registry.get_snapshot.return_value = AiProfileSnapshot(profile, {}, 0.0, None, 1)
+    feishu = MagicMock()
+    feishu.list_fields = AsyncMock(side_effect=lambda app_token, table_id: {"summary": {"type": 1}} if table_id.startswith("tbl_") else {"amount": {"type": 1}})
+    before = targets_file.read_bytes()
+    target = _target_dict("2026", year=2026)
+    target.update(bill_app_token="override", bill_table_id="wrong-type")
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.put("/admin/config/targets", json=_put_body([target], "2026", targets.get_snapshot().generation), headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["path"] == "targets[0].fields[1].feishu_field"
+    assert targets_file.read_bytes() == before
 
 
 async def test_put_targets_validation_failure_returns_422_no_write(targets_file):
@@ -589,9 +748,10 @@ async def test_put_targets_readonly_filesystem_returns_409(monkeypatch, targets_
     """
     from app import main as main_mod
 
-    t2026 = FeishuTargetConfig("2026", 2026, "bascn_2026", "tbl_2026", "rec_2026", "原始信息", True)
-    snap = _snapshot([t2026], default_alias="2026", generation=1)
-    registry = _mock_registry_healthy(snap, generation=1)
+    settings = _dynamic_settings(targets_file)
+    registry = TargetRegistry(settings)
+    registry.load_initial()
+    original_snapshot = registry.get_snapshot()
 
     def _replace_raises(src, dst):
         raise OSError(errno.EROFS, "Read-only file system", str(dst))
@@ -601,7 +761,7 @@ async def test_put_targets_readonly_filesystem_returns_409(monkeypatch, targets_
     original_content = targets_file.read_text(encoding="utf-8")
 
     async with lifespan(app):
-        app.state.settings = _dynamic_settings(targets_file=targets_file)
+        app.state.settings = settings
         app.state.target_registry = registry
 
         async with httpx.AsyncClient(
@@ -621,6 +781,7 @@ async def test_put_targets_readonly_filesystem_returns_409(monkeypatch, targets_
     assert body["error"]["code"] == "RUNTIME_READONLY"
     assert body["error"]["suggested_action"] == "host-edit"
     assert targets_file.read_text(encoding="utf-8") == original_content
+    assert registry.get_snapshot() is original_snapshot
 
 
 async def test_put_targets_no_token_returns_401(targets_file):

@@ -16,6 +16,7 @@ definitions. Key design decisions:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping, Set
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -54,7 +55,7 @@ class FieldSpec:
 def encode_fields(
     extraction: ExtractionResult,
     specs: list[FieldSpec],
-    option_whitelists: dict[str, set[str]],
+    option_whitelists: Mapping[str, Set[str]],
 ) -> tuple[dict[str, object], dict[str, object], list[str]]:
     """Encode an ExtractionResult into Feishu field dicts.
 

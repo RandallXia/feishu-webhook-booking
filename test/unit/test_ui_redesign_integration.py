@@ -39,6 +39,7 @@ from app.config import get_settings
 from app.field_codec import FieldSpec
 from app.main import app, lifespan
 from app.pipeline import AiPipeline
+from test_config_ui_integration import _SCHEMA, _install_mock_registry
 from app.target_registry import (
     FeishuTargetConfig,
     TargetRegistrySnapshot,
@@ -389,11 +390,13 @@ async def test_disabled_field_not_written_end_to_end(monkeypatch, targets_file, 
 
     initial_profile = _profile()
     ai_registry = _mock_ai_registry_swapping(initial_profile, disabled_profile, generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     extractor = AsyncMock()
     extractor.extract = AsyncMock(return_value=_ok_extraction())
 
     feishu = AsyncMock()
+    feishu.list_fields.return_value = _SCHEMA
     feishu.update_original_text = AsyncMock(return_value="rec_2026")
     feishu.update_record_field = AsyncMock(return_value="rec_2026")
     feishu.create_record = AsyncMock(return_value="rec-bill-new")
@@ -467,6 +470,7 @@ async def test_disabled_field_get_roundtrip(monkeypatch, targets_file, profile_f
 
     initial_profile = _profile()
     ai_registry = _mock_ai_registry_swapping(initial_profile, disabled_profile, generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     settings = _dynamic_settings(targets_file, profile_file=profile_file)
 
@@ -475,6 +479,7 @@ async def test_disabled_field_get_roundtrip(monkeypatch, targets_file, profile_f
         app.state.target_registry = target_registry
         app.state.ai_registry = ai_registry
         app.state.feishu_client = AsyncMock()
+        app.state.feishu_client.list_fields.return_value = _SCHEMA
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app), base_url=TEST_BASE_URL,
@@ -571,11 +576,13 @@ async def test_reenable_restores_write(monkeypatch, targets_file, profile_file):
     )
     ai_registry.get_status = MagicMock(side_effect=_get_status)
     ai_registry.reload = AsyncMock(side_effect=_reload)
+    _install_mock_registry(ai_registry, profile_file)
 
     extractor = AsyncMock()
     extractor.extract = AsyncMock(return_value=_ok_extraction())
 
     feishu = AsyncMock()
+    feishu.list_fields.return_value = _SCHEMA
     feishu.update_original_text = AsyncMock(return_value="rec_2026")
     feishu.update_record_field = AsyncMock(return_value="rec_2026")
     feishu.create_record = AsyncMock(return_value="rec-bill-new")
@@ -678,11 +685,13 @@ async def test_summary_disabled_still_writes_bill(monkeypatch, targets_file, pro
 
     initial_profile = _profile()
     ai_registry = _mock_ai_registry_swapping(initial_profile, disabled_summary_profile, generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     extractor = AsyncMock()
     extractor.extract = AsyncMock(return_value=_ok_extraction())
 
     feishu = AsyncMock()
+    feishu.list_fields.return_value = _SCHEMA
     feishu.update_original_text = AsyncMock(return_value="rec_2026")
     feishu.update_record_field = AsyncMock(return_value="rec_2026")
     feishu.create_record = AsyncMock(return_value="rec-bill-new")

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import errno
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -157,6 +158,7 @@ def _mock_registry_healthy(generation: int = 1) -> AsyncMock:
     registry.get_snapshot = MagicMock(return_value=_stub_snapshot())
     registry.get_status = MagicMock(side_effect=_get_status)
     registry.reload = AsyncMock(side_effect=_reload)
+    registry.install_candidate = MagicMock()
     return registry
 
 
@@ -179,7 +181,17 @@ def _mock_registry_fail_closed() -> AsyncMock:
 
 
 def _mock_feishu() -> AsyncMock:
-    return AsyncMock()
+    client = AsyncMock()
+    field_types = {"text": 1, "passthrough": 1, "number": 2, "single_select": 3, "date": 5}
+    fields = {_PROFILE.summary_field: {"type": 1}}
+    for spec in _PROFILE.fields:
+        if spec.target == "bill":
+            fields[spec.feishu_field] = {
+                "type": field_types[spec.type],
+                "property": {"options": [{"name": value} for value in _WHITELISTS.get(spec.feishu_field, set())]},
+            }
+    client.list_fields = AsyncMock(return_value=fields)
+    return client
 
 
 def _profile_dict() -> dict:
@@ -377,17 +389,15 @@ async def test_put_profile_happy(monkeypatch, profile_file):
       AND the profile file now contains dump_profile's output
       AND ai_registry.reload(force=True) was awaited
     """
-    from app import main as main_mod
+    from app.ai_profile import AiProfileRegistry
     from app.toml_writer import dump_profile
 
     expected_new_text = dump_profile(_profile_dict_converted())
-    monkeypatch.setattr(
-        main_mod, "validate_profile_candidate",
-        AsyncMock(return_value=(_PROFILE, _WHITELISTS, [])),
-    )
-
+    profile_file.write_text(expected_new_text, encoding="utf-8")
     original_content = profile_file.read_text(encoding="utf-8")
-    registry = _mock_registry_healthy(generation=1)
+    feishu = _mock_feishu()
+    registry = AiProfileRegistry(_enabled_settings(profile_file), feishu)
+    await registry.load_initial()
 
     async with lifespan(app):
         app.state.settings = _enabled_settings(profile_file=profile_file)
@@ -418,8 +428,7 @@ async def test_put_profile_happy(monkeypatch, profile_file):
     assert profile_file.read_text(encoding="utf-8") == expected_new_text
 
     # reload was force-called
-    registry.reload.assert_awaited_once()
-    assert registry.reload.await_args.kwargs.get("force") is True
+    assert registry.get_snapshot().generation == 2
 
 
 def _profile_dict_converted() -> dict:
@@ -505,6 +514,98 @@ async def test_put_profile_stale_generation_returns_409(profile_file):
     assert response.json()["detail"]["error"]["code"] == "STALE_WRITE"
 
 
+async def test_real_registry_profile_save_never_queries_after_replace(tmp_path):
+    from app.ai_profile import AiProfileRegistry
+    from app.feishu_client import FeishuClientError
+    from app.toml_writer import dump_profile
+
+    path = tmp_path / "profile.toml"
+    path.write_text(dump_profile(_profile_dict_converted()), encoding="utf-8")
+    settings = _enabled_settings(path)
+    feishu = _mock_feishu()
+    registry = AiProfileRegistry(settings, feishu)
+    await registry.load_initial()
+    original = path.read_bytes()
+    fields = await feishu.list_fields("ignored", "ignored")
+
+    async def list_fields(app_token, table_id):
+        if path.read_bytes() != original:
+            raise FeishuClientError("upstream unavailable after replace", stage="list_fields")
+        return fields
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    body = _profile_dict()
+    body["prompt_header"] = "updated"
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.put("/admin/config/profile", json={"profile": body, "base_generation": registry.get_snapshot().generation}, headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 200
+    assert registry.get_snapshot().profile.prompt_header == "updated"
+    assert path.read_bytes() != original
+
+
+async def test_profile_save_rejects_target_reload_during_validation(monkeypatch, profile_file):
+    from app import main as main_mod
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def validate(*args):
+        started.set()
+        await release.wait()
+        return _PROFILE, _WHITELISTS, []
+
+    monkeypatch.setattr(main_mod, "validate_profile_candidate", validate)
+    before = profile_file.read_bytes()
+    async with lifespan(app):
+        app.state.settings = _enabled_settings(profile_file=profile_file)
+        app.state.ai_registry = _mock_registry_healthy()
+        app.state.feishu_client = _mock_feishu()
+        targets = app.state.target_registry
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            request = asyncio.create_task(client.put("/admin/config/profile", json={"profile": _profile_dict(), "base_generation": 1}, headers={"X-Admin-Token": ADMIN_TOKEN}))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            targets.reload(force=True)
+            release.set()
+            response = await asyncio.wait_for(request, timeout=2)
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["code"] == "STALE_WRITE"
+    assert profile_file.read_bytes() == before
+
+
+async def test_profile_save_rejects_invalid_second_book_schema(monkeypatch, profile_file, tmp_path):
+    from app import main as main_mod
+    from app.target_registry import TargetRegistry
+    from app.toml_writer import dump_targets
+
+    path = tmp_path / "targets.toml"
+    path.write_text(dump_targets({"default_alias": "a", "targets": {
+        "a": {"app_token": "extract", "table_id": "a", "record_id": "a"},
+        "b": {"app_token": "extract", "table_id": "b", "record_id": "b", "bill_app_token": "override", "bill_table_id": "bad"},
+    }}), encoding="utf-8")
+    settings = replace(_enabled_settings(profile_file), feishu_targets_file=path)
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    feishu = _mock_feishu()
+    valid_fields = await feishu.list_fields("global", "global")
+    feishu.list_fields.side_effect = lambda app_token, table_id: {} if table_id == "bad" else valid_fields
+    monkeypatch.setattr(main_mod, "validate_profile_candidate", AsyncMock(return_value=(_PROFILE, _WHITELISTS, [])))
+    before = profile_file.read_bytes()
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = _mock_registry_healthy()
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.put("/admin/config/profile", json={"profile": _profile_dict(), "base_generation": 1}, headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 422
+    assert any(error["path"].startswith("targets[1].fields[") for error in response.json()["detail"]["errors"])
+    assert profile_file.read_bytes() == before
+
+
 async def test_put_profile_readonly_filesystem_returns_409(monkeypatch, profile_file):
     """
     GIVEN validate passes BUT os.replace raises PermissionError (simulating :ro mount)
@@ -513,25 +614,27 @@ async def test_put_profile_readonly_filesystem_returns_409(monkeypatch, profile_
       AND response.suggested_action == "host-edit"
       AND the profile file is UNCHANGED (the tmp was written but not replaced)
     """
-    from app import main as main_mod
+    from app.ai_profile import AiProfileRegistry
+    from app.toml_writer import dump_profile
 
-    monkeypatch.setattr(
-        main_mod, "validate_profile_candidate",
-        AsyncMock(return_value=(_PROFILE, _WHITELISTS, [])),
-    )
+    profile_file.write_text(dump_profile(_profile_dict_converted()), encoding="utf-8")
+    feishu = _mock_feishu()
+    registry = AiProfileRegistry(_enabled_settings(profile_file), feishu)
+    await registry.load_initial()
+    snapshot = registry.get_snapshot()
 
     def _replace_raises(src, dst):
         raise PermissionError(errno.EROFS, "Read-only file system", dst)
 
-    monkeypatch.setattr(main_mod.os, "replace", _replace_raises)
+    replace_mock = MagicMock(side_effect=_replace_raises)
+    monkeypatch.setattr("app.ai_profile.os.replace", replace_mock)
 
     original_content = profile_file.read_text(encoding="utf-8")
-    registry = _mock_registry_healthy(generation=1)
 
     async with lifespan(app):
         app.state.settings = _enabled_settings(profile_file=profile_file)
         app.state.ai_registry = registry
-        app.state.feishu_client = _mock_feishu()
+        app.state.feishu_client = feishu
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app), base_url=TEST_BASE_URL
@@ -548,6 +651,8 @@ async def test_put_profile_readonly_filesystem_returns_409(monkeypatch, profile_
     assert body["detail"]["error"]["suggested_action"] == "host-edit"
     # Original file untouched (os.replace failed before swap)
     assert profile_file.read_text(encoding="utf-8") == original_content
+    assert registry.get_snapshot() is snapshot
+    replace_mock.assert_called_once()
 
 
 async def test_put_profile_ai_disabled_returns_404(profile_file):
@@ -625,7 +730,7 @@ async def test_put_profile_reload_disabled_returns_404(profile_file):
 # ─── enabled flag in the PUT contract ──────────────────────────────────────
 
 
-async def test_put_profile_enabled_false_round_trips_to_file(monkeypatch, profile_file):
+async def test_put_profile_enabled_false_round_trips_to_file(profile_file):
     """
     GIVEN a healthy ai_registry + a profile dict where one field has enabled=False
        AND validate_profile_candidate returns no errors
@@ -634,22 +739,21 @@ async def test_put_profile_enabled_false_round_trips_to_file(monkeypatch, profil
       AND the saved file contains `enabled = false` for that field
         (verified by re-parsing the file with tomllib)
     """
-    from app import main as main_mod
+    from app.ai_profile import AiProfileRegistry
+    from app.toml_writer import dump_profile
 
     profile_body = _profile_dict()
     profile_body["fields"][2]["enabled"] = False
 
-    monkeypatch.setattr(
-        main_mod, "validate_profile_candidate",
-        AsyncMock(return_value=(_PROFILE, _WHITELISTS, [])),
-    )
-
-    registry = _mock_registry_healthy(generation=1)
+    profile_file.write_text(dump_profile(_profile_dict_converted()), encoding="utf-8")
+    feishu = _mock_feishu()
+    registry = AiProfileRegistry(_enabled_settings(profile_file), feishu)
+    await registry.load_initial()
 
     async with lifespan(app):
         app.state.settings = _enabled_settings(profile_file=profile_file)
         app.state.ai_registry = registry
-        app.state.feishu_client = _mock_feishu()
+        app.state.feishu_client = feishu
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app), base_url=TEST_BASE_URL
@@ -667,6 +771,7 @@ async def test_put_profile_enabled_false_round_trips_to_file(monkeypatch, profil
     saved = tomllib.loads(profile_file.read_text(encoding="utf-8"))
     flow_field = next(f for f in saved["fields"] if f["ai_key"] == "flow_type")
     assert flow_field["enabled"] is False
+    assert registry.get_snapshot().profile.fields[2].enabled is False
 
 
 async def test_put_profile_field_missing_enabled_returns_422(monkeypatch, profile_file):

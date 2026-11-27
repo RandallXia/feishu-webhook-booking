@@ -14,12 +14,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.ai_extractor import AiExtractorError, ExtractionResult
-from app.ai_profile import AiProfile
+from app.ai_profile import AiDestinationContext, AiProfile, AiProfileRegistry, AiProfileSnapshot
 from app.field_codec import FieldSpec
 from app.pipeline import AiPipeline, PipelineResult
 from app.target_registry import FeishuTargetConfig
@@ -132,6 +133,12 @@ def _make_whitelists() -> dict[str, set[str]]:
     }
 
 
+def _context(profile, whitelists):
+    from types import MappingProxyType
+    snapshot = AiProfileSnapshot(profile, whitelists, 0.0, None, 1)
+    return AiDestinationContext(snapshot, profile.bill_app_token, profile.bill_table_id, "profile", MappingProxyType({k: frozenset(v) for k, v in whitelists.items()}))
+
+
 def _make_pipeline(
     *,
     extractor_return: ExtractionResult | None = None,
@@ -179,7 +186,7 @@ async def test_happy_full_chain():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert result.bill_record_id == "bill-rec-001"
@@ -218,7 +225,7 @@ async def test_ai_failure_returns_failed():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "failed"
     assert result.dedup_hit is False
@@ -242,13 +249,13 @@ async def test_dedup_hit_returns_duplicate():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    first = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    first = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
     assert first.ai_status == "succeeded"
 
     initial_extract_count = pipeline._extractor.extract.call_count
     initial_create_count = pipeline._feishu.create_record.call_count
 
-    second = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    second = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert second.ai_status == "duplicate"
     assert second.dedup_hit is True
@@ -256,10 +263,77 @@ async def test_dedup_hit_returns_duplicate():
     assert pipeline._feishu.create_record.call_count == initial_create_count
 
 
+async def test_rerouted_book_creates_in_new_bill_table():
+    pipeline = _make_pipeline()
+    target = _make_target()
+    profile = _make_profile()
+    whitelists = _make_whitelists()
+    first = await pipeline.run("same text", target, _context(profile, whitelists))
+    rerouted = replace(profile, bill_table_id="another-table")
+    second = await pipeline.run("same text", target, _context(rerouted, whitelists))
+    assert first.ai_status == "succeeded"
+    assert second.ai_status == "succeeded"
+    assert pipeline._feishu.create_record.await_args.args[2] == "another-table"
+
+
+async def test_same_text_in_different_books_creates_both_records():
+    pipeline = _make_pipeline()
+    target = _make_target()
+    context = _context(_make_profile(), _make_whitelists())
+    first = await pipeline.run("same text", target, context)
+    second = await pipeline.run("same text", replace(target, alias="other"), context)
+    assert (first.ai_status, second.ai_status) == ("succeeded", "succeeded")
+    assert pipeline._feishu.create_record.await_count == 2
+
+
+async def test_destination_options_control_encoding_and_bill_routing():
+    pipeline = _make_pipeline(extractor_return=_make_extraction(category="餐饮"))
+    profile = _make_profile()
+    snapshot = AiProfileSnapshot(profile, _make_whitelists(), 0.0, None, 1)
+    options = _make_whitelists()
+    options["分类"] = {"交通", "其他"}
+    async def list_fields(app_token, table_id):
+        selected = _make_whitelists() if table_id == profile.bill_table_id else options
+        fields = {
+            name: {"type": 3, "property": {"options": [{"name": value} for value in values]}}
+            for name, values in selected.items()
+        }
+        fields.update({"消费描述": {"type": 1}, "金额": {"type": 2}, "日期": {"type": 5}, "原始信息": {"type": 1}})
+        return fields
+
+    pipeline._feishu.list_fields.side_effect = list_fields
+    registry = AiProfileRegistry(MagicMock(), pipeline._feishu)
+    first_target = replace(_make_target(), alias="first")
+    first_context = await registry.get_context(snapshot, first_target)
+    target = replace(_make_target(), bill_app_token="override", bill_table_id="table-b")
+    context = await registry.get_context(snapshot, target)
+    first = await pipeline.run("text", first_target, first_context)
+    result = await pipeline.run("text", target, context)
+    assert (first.ai_status, result.ai_status) == ("succeeded", "succeeded")
+    fields, app_token, table_id = pipeline._feishu.create_record.await_args.args
+    assert (fields["分类"], app_token, table_id) == ("其他", "override", "table-b")
+    assert pipeline._feishu.update_record_field.await_args.args[2] == target
+    first_prompt = pipeline._extractor.extract.await_args_list[0].args[2]["category"]
+    second_prompt = pipeline._extractor.extract.await_args_list[1].args[2]["category"]
+    assert "餐饮" in first_prompt and "餐饮" not in second_prompt
+
+
+async def test_failed_create_can_be_retried():
+    from app.feishu_client import FeishuClientError
+
+    pipeline = _make_pipeline()
+    pipeline._feishu.create_record.side_effect = [FeishuClientError("failed", stage="create_record"), "recovered"]
+    target = _make_target()
+    context = _context(_make_profile(), _make_whitelists())
+    first = await pipeline.run("same text", target, context)
+    second = await pipeline.run("same text", target, context)
+    assert (first.ai_status, second.ai_status, second.bill_record_id) == ("failed", "succeeded", "recovered")
+
+
 # ─── Dedup TTL expiry ───────────────────────────────────────────────────────
 
 
-async def test_dedup_ttl_expiry_reruns():
+async def test_dedup_ttl_expiry_reruns(monkeypatch):
     """
     GIVEN a pipeline that has successfully processed a text+alias once
        AND time.time() is monkeypatched so the second call is AFTER TTL expiry
@@ -279,23 +353,19 @@ async def test_dedup_ttl_expiry_reruns():
 
     import app.pipeline as pipeline_mod
 
-    monkeypatch_target = pipeline_mod.time
-    pipeline_mod.time.time = fake_time
+    monkeypatch.setattr(pipeline_mod.time, "time", fake_time)
 
-    first = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    first = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
     assert first.ai_status == "succeeded"
 
     initial_extract_count = pipeline._extractor.extract.call_count
 
     base_time[0] = 1000.0 + 301.0
 
-    second = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    second = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert second.ai_status == "succeeded"
     assert pipeline._extractor.extract.call_count == initial_extract_count + 1
-
-    pipeline_mod.time.time = monkeypatch_target.time
-
 
 # ─── Summary writeback failure ────────────────────────────────────────────
 
@@ -317,7 +387,7 @@ async def test_summary_writeback_failure_continues():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert result.bill_record_id == "bill-rec-001"
@@ -349,7 +419,7 @@ async def test_encode_valueerror_returns_failed():
     pipeline_mod.encode_fields = raise_valueerror
 
     try:
-        result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+        result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
     finally:
         pipeline_mod.encode_fields = monkeypatch_target
 
@@ -372,7 +442,7 @@ async def test_run_catches_all_exceptions():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "failed"
     assert result.dedup_hit is False
@@ -394,7 +464,7 @@ async def test_extracted_dict_has_notification_fields():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert result.extracted["amount"] == extraction.amount
@@ -441,7 +511,7 @@ async def test_disabled_category_omitted_from_create_record():
     profile = _make_profile_with_disabled("category")
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     bill_fields_arg = pipeline._feishu.create_record.call_args.args[0]
@@ -460,7 +530,7 @@ async def test_disabled_summary_skips_update_record_field():
     profile = _make_profile_with_disabled("summary")
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert pipeline._feishu.update_record_field.call_count == 0
@@ -493,7 +563,7 @@ async def test_all_bill_fields_disabled_skips_create_record():
     )
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert pipeline._feishu.create_record.call_count == 0
@@ -512,7 +582,7 @@ async def test_disabled_category_omitted_from_extracted_dict():
     profile = _make_profile_with_disabled("category")
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert "category" not in result.extracted
@@ -559,7 +629,7 @@ async def test_extract_failure_sets_error():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "failed"
     assert result.error is not None
@@ -587,7 +657,7 @@ async def test_encode_valueerror_sets_error():
     pipeline_mod.encode_fields = raise_valueerror
 
     try:
-        result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+        result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
     finally:
         pipeline_mod.encode_fields = monkeypatch_target
 
@@ -612,7 +682,7 @@ async def test_bill_create_failure_sets_error():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "failed"
     assert result.error is not None
@@ -632,7 +702,7 @@ async def test_success_path_sets_summary():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("星巴克 ¥35", target, profile, whitelists)
+    result = await pipeline.run("星巴克 ¥35", target, _context(profile, whitelists))
 
     assert result.ai_status == "succeeded"
     assert result.summary == "星巴克 ¥35 支付宝"
@@ -651,10 +721,10 @@ async def test_dedup_hit_summary_and_error_are_none():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    first = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    first = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
     assert first.ai_status == "succeeded"
 
-    second = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    second = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert second.ai_status == "duplicate"
     assert second.summary is None
@@ -674,7 +744,7 @@ async def test_top_level_exception_sets_internal_error():
     profile = _make_profile()
     whitelists = _make_whitelists()
 
-    result = await pipeline.run("麦当劳 ¥42", target, profile, whitelists)
+    result = await pipeline.run("麦当劳 ¥42", target, _context(profile, whitelists))
 
     assert result.ai_status == "failed"
     assert result.error == "internal error"

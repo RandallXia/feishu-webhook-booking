@@ -20,6 +20,7 @@ from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 from httpx import ASGITransport
 
 from app.config import get_settings
@@ -246,6 +247,22 @@ async def test_unauthorized_no_ai_triggered():
 
     assert response.status_code == 401
     assert pipeline_mock.run.await_count == 0
+
+
+@pytest.mark.parametrize("selector", ["book_alias", "year"])
+async def test_explicit_null_selector_does_not_write_default_target(selector):
+    feishu = _mock_feishu_client()
+    async with lifespan(app):
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.post(
+                "/v1/webhook/ocr",
+                json={**VALID_PAYLOAD, selector: None},
+                headers={"X-Webhook-Token": WEBHOOK_TOKEN},
+            )
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"]["code"] == "INVALID_TARGET_SELECTOR"
+    feishu.update_original_text.assert_not_awaited()
 
 
 # ─── Test 5: 422 validation error → AI pipeline NOT called ──────────────────

@@ -37,6 +37,7 @@ from httpx import ASGITransport
 
 from app.ai_extractor import AiExtractorError, ExtractionResult
 from app.ai_profile import (
+    AiDestinationContext,
     AiProfile,
     AiProfileRegistryUnavailableError,
 )
@@ -89,6 +90,10 @@ def _mock_registry(snapshot=None) -> MagicMock:
         snapshot.profile = _make_profile()
         snapshot.option_whitelists = _make_whitelists()
     registry.get_snapshot = MagicMock(return_value=snapshot)
+    registry.get_context = AsyncMock(side_effect=lambda snap, target: AiDestinationContext(
+        snap, snap.profile.bill_app_token, snap.profile.bill_table_id, "profile",
+        {key: frozenset(values) for key, values in snap.option_whitelists.items()},
+    ))
     return registry
 
 
@@ -533,8 +538,7 @@ async def test_profile_hot_reload_bad_toml_returns_503():
         app.state.settings = _enabled_settings()
         app.state.ai_pipeline = _mock_pipeline_run(succeeded)
 
-        registry = MagicMock()
-        registry.maybe_reload = AsyncMock(return_value=None)
+        registry = _mock_registry()
         registry.get_snapshot = MagicMock(
             side_effect=AiProfileRegistryUnavailableError("registry fail-closed")
         )
@@ -608,3 +612,56 @@ async def test_full_pipeline_without_client_token():
     # create_record now takes 3 args (no client_token)
     assert len(feishu.create_record.call_args_list[0].args) == 3
     assert len(feishu.create_record.call_args_list[1].args) == 3
+
+
+async def test_two_books_route_same_text_and_bad_destination_isolated(tmp_path):
+    from app.ai_profile import AiProfileRegistry
+    from app.target_registry import TargetRegistry
+    from app.toml_writer import dump_profile, dump_targets
+
+    profile = _make_profile()
+    profile_path = tmp_path / "profile.toml"
+    targets_path = tmp_path / "targets.toml"
+    profile_path.write_text(dump_profile({
+        "prompt_header": profile.prompt_header,
+        "extract": {"summary_field": profile.summary_field},
+        "bill": {"app_token": "global", "table_id": "global-table"},
+        "fields": [dataclasses.asdict(spec) for spec in profile.fields],
+    }), encoding="utf-8")
+    targets_path.write_text(dump_targets({
+        "default_alias": "a",
+        "targets": {
+            alias: {"app_token": "extract", "table_id": f"extract-{alias}", "record_id": f"record-{alias}", "bill_app_token": "bill", "bill_table_id": f"bill-{alias}"}
+            for alias in ("a", "b", "bad")
+        },
+    }), encoding="utf-8")
+    settings = replace(_enabled_settings(), ai_profile_file=profile_path, feishu_targets_file=targets_path)
+    feishu = _mock_feishu_client()
+    types = {"text": 1, "number": 2, "single_select": 3, "date": 5}
+    fields = {
+        spec.feishu_field: {"type": types[spec.type], "property": {"options": [{"name": name} for name in _make_whitelists().get(spec.feishu_field, set())]}}
+        for spec in profile.fields if spec.target == "bill"
+    }
+
+    async def list_fields(app_token, table_id):
+        return {} if table_id == "bill-bad" else fields
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    registry = AiProfileRegistry(settings, feishu)
+    await registry.load_initial()
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    extractor = MagicMock()
+    extractor.extract = AsyncMock(return_value=_make_extraction())
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.feishu_client = feishu
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.ai_pipeline = AiPipeline(settings, extractor, feishu)
+        async with _client() as client:
+            responses = [await _post(client, {**VALID_PAYLOAD, "book_alias": alias}) for alias in ("a", "bad", "b", "unknown")]
+    assert [response.status_code for response in responses] == [200, 503, 200, 422]
+    assert [call.kwargs["target"].alias for call in feishu.update_original_text.await_args_list] == ["a", "bad", "b"]
+    assert [(call.args[1], call.args[2]) for call in feishu.create_record.await_args_list] == [("bill", "bill-a"), ("bill", "bill-b")]
+    assert [call.args[2].alias for call in feishu.update_record_field.await_args_list] == ["a", "b"]

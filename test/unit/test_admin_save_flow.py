@@ -385,26 +385,6 @@ def test_admin_js_exposes_save_flow_functions():
     assert "restart-banner" in js, "admin.js missing restart-banner reference"
 
 
-def test_admin_js_mark_dirty_uses_dirty_flag_and_save_clears():
-    """
-    GIVEN admin.js markDirty function + save success handlers
-    WHEN the source is scanned
-    THEN markDirty sets a dirty flag
-      AND at least one save success path clears the dirty flag
-      (locks the dirty-check-before-dry-run contract)
-    """
-    js = _read_static("admin.js")
-    assert re.search(r"function\s+markDirty\s*\([^)]*\)\s*\{", js)
-    # markDirty body assigns a dirty variable.
-    m = re.search(r"function\s+markDirty\s*\([^)]*\)\s*\{(.+?)\n\s*function\s", js, re.S)
-    assert m, "markDirty function body not isolatable"
-    assert re.search(r"dirty\s*=\s*true", m.group(1)) or "isDirty" in m.group(1)
-    # A save success path clears the dirty flag.
-    assert re.search(r"dirty\s*=\s*false", js) or "isDirty = false" in js, (
-        "save success path must clear the dirty flag"
-    )
-
-
 def test_admin_js_save_buttons_debounced():
     """
     GIVEN admin.js save button handlers

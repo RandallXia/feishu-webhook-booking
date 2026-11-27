@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import os
 import time
+from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import anyio
 from httpx import ASGITransport
 
 from app.ai_profile import (
@@ -166,6 +168,7 @@ def _single_select_field(name: str, options: list[str]) -> dict:
     """Build a list_fields entry for a single_select field."""
     return {
         "field_name": name,
+        "type": 3,
         "property": {
             "options": [{"name": opt} for opt in options],
         },
@@ -175,6 +178,10 @@ def _single_select_field(name: str, options: list[str]) -> dict:
 def _default_list_fields() -> dict[str, dict]:
     """list_fields response matching _VALID_PROFILE_TOML single_select fields."""
     return {
+        "消费描述": {"type": 1},
+        "金额": {"type": 2},
+        "账单日期": {"type": 5},
+        "原始采集账单数据": {"type": 1},
         "收支类型": _single_select_field("收支类型", ["支出", "收入"]),
         "收支分类": _single_select_field("收支分类", ["餐饮", "交通", "购物", "日用", "娱乐", "医疗", "其他"]),
         "支付途径": _single_select_field("支付途径", ["微信", "支付宝", "银行卡", "现金", "信用卡", "未知"]),
@@ -541,3 +548,226 @@ async def test_webhook_503_when_registry_unavailable(tmp_path, monkeypatch):
     assert body["detail"]["error"]["code"] == "AI_PROFILE_UNAVAILABLE"
     # Pipeline was never called — the 503 short-circuits before the AI stage
     assert app.state.ai_pipeline.run.await_count == 0
+
+
+async def test_destination_failure_is_isolated_and_retried(tmp_path):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    snapshot = registry.get_snapshot()
+    target = SimpleNamespace(alias="book", bill_app_token="other", bill_table_id="bad")
+    bad = _default_list_fields()
+    bad["收支分类"] = _single_select_field("收支分类", ["餐饮"])
+    feishu.list_fields.side_effect = [bad, _default_list_fields()]
+    with pytest.raises(AiProfileRegistryUnavailableError):
+        await registry.get_context(snapshot, target)
+    context = await registry.get_context(snapshot, target)
+    assert context.bill_table_id == "bad"
+    assert context.option_whitelists["收支分类"] == {"餐饮", "交通", "购物", "日用", "娱乐", "医疗", "其他"}
+    assert registry.get_snapshot() is snapshot
+
+
+async def test_destination_lookup_error_retries_without_using_global(tmp_path):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    snapshot = registry.get_snapshot()
+    target = SimpleNamespace(alias="book", bill_app_token="other", bill_table_id="table")
+    feishu.list_fields.side_effect = [FeishuClientError("offline", stage="list_fields"), _default_list_fields()]
+    with pytest.raises(AiProfileRegistryUnavailableError):
+        await registry.get_context(snapshot, target)
+    result = await registry.get_context(snapshot, target)
+    assert (result.bill_app_token, result.bill_table_id, result.source) == ("other", "table", "target")
+    assert feishu.list_fields.await_count == 3
+
+
+async def test_same_destination_concurrent_load_shares_validation(tmp_path):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    snapshot = registry.get_snapshot()
+    target = SimpleNamespace(alias="book", bill_app_token="other", bill_table_id="table")
+    started, release = anyio.Event(), anyio.Event()
+    results = []
+
+    async def list_fields(app_token, table_id):
+        started.set()
+        await release.wait()
+        return _default_list_fields()
+
+    async def load():
+        results.append(await registry.get_context(snapshot, target))
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as group:
+            group.start_soon(load)
+            await started.wait()
+            group.start_soon(load)
+            release.set()
+    assert len(results) == 2
+    assert results[0].option_whitelists == results[1].option_whitelists
+    feishu.list_fields.assert_awaited_once_with("other", "table")
+
+
+@pytest.mark.parametrize("app_token,table_id", [("other", None), ("", "table"), (None, "table"), (123, "table")])
+async def test_invalid_override_never_inherits(tmp_path, app_token, table_id):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    target = SimpleNamespace(alias="book", bill_app_token=app_token, bill_table_id=table_id)
+    with pytest.raises(AiProfileRegistryUnavailableError):
+        await registry.get_context(registry.get_snapshot(), target)
+    feishu.list_fields.assert_awaited_once_with("bascnXXX", "tblXXX")
+
+
+async def test_late_old_generation_cannot_replace_new_context(tmp_path):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    old = registry.get_snapshot()
+    target = SimpleNamespace(alias="book", bill_app_token="other", bill_table_id="table")
+    started, release = anyio.Event(), anyio.Event()
+    old_fields = _default_list_fields()
+    old_fields["收支分类"] = _single_select_field("收支分类", ["其他", "old"])
+    new_fields = _default_list_fields()
+    new_fields["收支分类"] = _single_select_field("收支分类", ["其他", "new"])
+    results = []
+
+    async def list_fields(app_token, table_id):
+        if app_token == "bascnXXX":
+            return _default_list_fields()
+        if registry.get_snapshot() is old:
+            started.set()
+            await release.wait()
+            return old_fields
+        return new_fields
+
+    async def load_old():
+        results.append(await registry.get_context(old, target))
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as group:
+            group.start_soon(load_old)
+            await started.wait()
+            await registry.reload(force=True)
+            new = await registry.get_context(registry.get_snapshot(), target)
+            release.set()
+    assert results[0].option_whitelists["收支分类"] == {"其他", "old"}
+    assert new.option_whitelists["收支分类"] == {"其他", "new"}
+    assert (await registry.get_context(registry.get_snapshot(), target)).option_whitelists == new.option_whitelists
+
+
+async def test_bill_schema_validation_detects_missing_wrong_type_and_invalid_fallback(tmp_path):
+    from app.ai_profile import validate_bill_schema
+
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), _make_feishu_mock(_default_list_fields()))
+    await registry.load_initial()
+    fields = {
+        "消费描述": {"type": 2},
+        "收支类型": {"type": 3, "property": {"options": [{"name": "收入"}]}},
+    }
+    errors = validate_bill_schema(registry.get_snapshot().profile, fields)
+    paths = {error["path"] for error in errors}
+    assert "fields[1].feishu_field" in paths
+    assert "fields[2].fallback" in paths
+    assert "fields[3].feishu_field" in paths
+
+
+async def test_bill_schema_accepts_matching_types_and_rejects_malformed_fields(tmp_path):
+    from app.ai_profile import validate_bill_schema
+
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), _make_feishu_mock(_default_list_fields()))
+    await registry.load_initial()
+    profile = registry.get_snapshot().profile
+    fields = _default_list_fields()
+    for definition in fields.values():
+        definition["type"] = 3
+    fields.update({"消费描述": {"type": 1}, "金额": {"type": 2}, "账单日期": {"type": 5}, "原始采集账单数据": {"type": 1}})
+    assert validate_bill_schema(profile, fields) == []
+    fields["金额"] = "malformed"
+    assert [error["path"] for error in validate_bill_schema(profile, fields)] == ["fields[3].feishu_field"]
+
+
+@pytest.mark.parametrize("bad_schema", ["wrong_type", "missing_field"])
+@pytest.mark.parametrize("override", [True, False])
+async def test_context_rejects_invalid_schema_and_retries(tmp_path, bad_schema, override):
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(_write_profile(tmp_path)), feishu)
+    await registry.load_initial()
+    target = SimpleNamespace(alias="book", bill_app_token="other" if override else None, bill_table_id="table" if override else None)
+    schema = _default_list_fields()
+    if bad_schema == "wrong_type":
+        schema["消费描述"] = {"type": 2}
+    else:
+        del schema["消费描述"]
+    feishu.list_fields.side_effect = [schema, _default_list_fields()]
+    with pytest.raises(AiProfileRegistryUnavailableError):
+        await registry.get_context(registry.get_snapshot(), target)
+    context = await registry.get_context(registry.get_snapshot(), target)
+    assert context.bill_table_id == ("table" if override else "tblXXX")
+    assert feishu.list_fields.await_count == 3
+
+
+async def test_late_reload_cannot_replace_newer_snapshot(tmp_path):
+    path = _write_profile(tmp_path)
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(path), feishu)
+    await registry.load_initial()
+    started, release, finished = anyio.Event(), anyio.Event(), anyio.Event()
+
+    async def list_fields(app_token, table_id):
+        if app_token == "old":
+            started.set()
+            await release.wait()
+        return _default_list_fields()
+
+    async def reload_old():
+        await registry.reload(force=True)
+
+    async def reload_new():
+        await registry.reload(force=True)
+        finished.set()
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    path.write_text(_VALID_PROFILE_TOML.replace('app_token = "bascnXXX"', 'app_token = "old"'), encoding="utf-8")
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as group:
+            group.start_soon(reload_old)
+            await started.wait()
+            path.write_text(_VALID_PROFILE_TOML.replace('app_token = "bascnXXX"', 'app_token = "new"'), encoding="utf-8")
+            group.start_soon(reload_new)
+            await finished.wait()
+            release.set()
+    assert registry.get_snapshot().profile.bill_app_token == "new"
+
+
+async def test_late_failed_reload_does_not_invalidate_newer_snapshot(tmp_path):
+    path = _write_profile(tmp_path)
+    feishu = _make_feishu_mock(_default_list_fields())
+    registry = AiProfileRegistry(_make_settings(path), feishu)
+    await registry.load_initial()
+    started, release = anyio.Event(), anyio.Event()
+
+    async def list_fields(app_token, table_id):
+        if app_token == "old":
+            started.set()
+            await release.wait()
+            raise FeishuClientError("old failed", stage="list_fields")
+        return _default_list_fields()
+
+    async def reload_old():
+        with pytest.raises(FeishuClientError):
+            await registry.reload(force=True)
+
+    feishu.list_fields = AsyncMock(side_effect=list_fields)
+    path.write_text(_VALID_PROFILE_TOML.replace('app_token = "bascnXXX"', 'app_token = "old"'), encoding="utf-8")
+    with anyio.fail_after(3):
+        async with anyio.create_task_group() as group:
+            group.start_soon(reload_old)
+            await started.wait()
+            path.write_text(_VALID_PROFILE_TOML.replace('app_token = "bascnXXX"', 'app_token = "new"'), encoding="utf-8")
+            await registry.reload(force=True)
+            release.set()
+    assert registry.get_snapshot().profile.bill_app_token == "new"

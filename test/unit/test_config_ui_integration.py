@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import errno
 import json
+import os
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -34,16 +36,21 @@ from httpx import ASGITransport
 from app.ai_extractor import ExtractionResult
 from app.ai_profile import (
     AiProfile,
+    AiDestinationContext,
+    AiProfileRegistry,
     AiProfileSnapshot,
 )
 from app.config import get_settings
 from app.field_codec import FieldSpec
+from app.feishu_client import FeishuClientError
 from app.main import app, lifespan
 from app.pipeline import AiPipeline
 from app.target_registry import (
     FeishuTargetConfig,
+    TargetRegistry,
     TargetRegistrySnapshot,
 )
+from app.toml_writer import dump_profile
 
 
 ADMIN_TOKEN = "test-admin-token"
@@ -122,6 +129,26 @@ _WHITELISTS: dict[str, set[str]] = {
     "支付方式": {"微信支付", "未知"},
 }
 
+_SCHEMA = {
+    "精简原始数据": {"type": 1}, "AI摘要": {"type": 1},
+    "描述": {"type": 1}, "金额": {"type": 2}, "日期": {"type": 5},
+    "原始采集": {"type": 1},
+    **{name: {"type": 3, "property": {"options": [{"name": option} for option in options]}}
+       for name, options in _WHITELISTS.items()},
+}
+
+
+def _install_mock_registry(registry, profile_file):
+    def install(profile, whitelists, temporary_file, expected_generation):
+        os.replace(temporary_file, profile_file)
+        registry.reload.side_effect(force=True)
+        return registry.get_snapshot()
+    registry.install_candidate = MagicMock(side_effect=install)
+    registry.get_context = AsyncMock(side_effect=lambda snapshot, target: AiDestinationContext(
+        snapshot, snapshot.profile.bill_app_token, snapshot.profile.bill_table_id,
+        "profile", _WHITELISTS,
+    ))
+
 
 def _profile(summary_field: str = "精简原始数据") -> AiProfile:
     # The summary passthrough FieldSpec's feishu_field must equal summary_field
@@ -194,7 +221,7 @@ def _mock_ai_registry(profile: AiProfile, generation: int = 1) -> AsyncMock:
 
     registry = AsyncMock()
     registry.maybe_reload = AsyncMock(return_value=None)
-    registry.get_snapshot = MagicMock(return_value=_stub_snapshot(state["profile"], state["generation"]))
+    registry.get_snapshot = MagicMock(side_effect=lambda: _stub_snapshot(state["profile"], state["generation"]))
     registry.get_status = MagicMock(side_effect=_get_status)
     registry.reload = AsyncMock(side_effect=_reload)
     return registry
@@ -267,9 +294,15 @@ def _mock_target_registry(snapshot, generation=1) -> MagicMock:
 
     registry = MagicMock(spec=TargetRegistry)
     registry.describe = MagicMock(side_effect=_describe)
-    registry.get_snapshot = MagicMock(return_value=state["snapshot"])
+    registry.get_snapshot = MagicMock(side_effect=lambda: state["snapshot"])
     registry.reload = MagicMock(side_effect=_reload)
     registry.maybe_reload = MagicMock(return_value=None)
+    def _install(candidate, temporary_file):
+        os.replace(temporary_file, temporary_file.with_suffix(""))
+        state["generation"] += 1
+        state["snapshot"] = replace(candidate, generation=state["generation"])
+        return state["snapshot"]
+    registry.install_candidate = MagicMock(side_effect=_install)
     # resolve() must return a real target for the webhook path.
     def _resolve(book_alias=None, year=None):
         snap = state["snapshot"]
@@ -426,6 +459,7 @@ async def test_full_config_roundtrip_webhook_uses_new_config(
     # one, mirroring the real registry re-reading the file — so the webhook
     # path (step 6) sees the new summary_field after the PUT (step 4) reloaded.
     ai_registry = _mock_ai_registry_swapping(old_profile, new_profile, generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     # Mock extractor returns a valid extraction; feishu is a SPY so we can
     # assert update_record_field was called with the new summary_field.
@@ -433,6 +467,7 @@ async def test_full_config_roundtrip_webhook_uses_new_config(
     extractor.extract = AsyncMock(return_value=_ok_extraction())
 
     feishu = AsyncMock()
+    feishu.list_fields.return_value = _SCHEMA
     feishu.update_original_text = AsyncMock(return_value="rec_2026")
     feishu.update_record_field = AsyncMock(return_value="rec_2026")
     feishu.create_record = AsyncMock(return_value="rec-bill-new")
@@ -557,6 +592,7 @@ async def test_readonly_full_path(monkeypatch, targets_file, profile_file):
     targets_snap = _targets_snapshot([t2025, t2026], default_alias="2026", generation=1)
     target_registry = _mock_target_registry(targets_snap, generation=1)
     ai_registry = _mock_ai_registry(_profile(), generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     settings = _dynamic_settings(targets_file, profile_file=profile_file)
 
@@ -565,6 +601,7 @@ async def test_readonly_full_path(monkeypatch, targets_file, profile_file):
         app.state.target_registry = target_registry
         app.state.ai_registry = ai_registry
         app.state.feishu_client = AsyncMock()
+        app.state.feishu_client.list_fields.return_value = _SCHEMA
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app), base_url=TEST_BASE_URL,
@@ -692,11 +729,13 @@ async def test_generation_race_two_puts(monkeypatch, profile_file):
     # generation=1; reload(force=True) bumps to 2 — so the second PUT (still
     # carrying base_generation=1) sees generation=2 → STALE_WRITE.
     ai_registry = _mock_ai_registry(_profile(), generation=1)
+    _install_mock_registry(ai_registry, profile_file)
 
     async with lifespan(app):
         app.state.settings = settings
         app.state.ai_registry = ai_registry
         app.state.feishu_client = AsyncMock()
+        app.state.feishu_client.list_fields.return_value = _SCHEMA
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app), base_url=TEST_BASE_URL,
@@ -794,3 +833,176 @@ async def test_env_save_then_get_roundtrip(env_file):
     written = env_file.read_text(encoding="utf-8")
     assert "AI_MODEL=gpt-4o" in written.splitlines()
     assert "AI_API_KEY=sk-super-secret" in written.splitlines()
+
+
+async def test_per_book_save_preview_and_same_ocr_route_with_real_registries(
+    targets_file, profile_file,
+):
+    profile_data = _profile_dict()
+    profile_data["extract"] = {"summary_field": profile_data.pop("summary_field")}
+    profile_file.write_text(dump_profile(profile_data), encoding="utf-8")
+    settings = _dynamic_settings(targets_file, profile_file=profile_file)
+    bill_schema = {
+        "描述": {"type": 1}, "金额": {"type": 2}, "日期": {"type": 5},
+        "原始采集": {"type": 1},
+        "收支类型": {"type": 3, "property": {"options": [{"name": "支出"}]}},
+        "支付方式": {"type": 3, "property": {"options": [{"name": "未知"}]}},
+    }
+    schemas = {}
+    for token, table, option in (
+        ("bascn-bill", "tbl-bill", "global"),
+        ("bill-A", "table-A", "A-only"),
+        ("bill-B", "table-B", "B-only"),
+    ):
+        schemas[(token, table)] = {
+            **bill_schema,
+            "分类": {"type": 3, "property": {"options": [{"name": "其他"}, {"name": option}]}},
+        }
+    for alias in ("2026", "2025"):
+        schemas[(f"bascn_{alias}", f"tbl_{alias}")] = {"精简原始数据": {"type": 1}}
+    feishu = AsyncMock()
+    feishu.list_fields.side_effect = lambda token, table: schemas[(token, table)]
+    feishu.update_original_text.side_effect = lambda original_text, target: target.record_id
+    feishu.update_record_field.return_value = "updated"
+    feishu.create_record.return_value = "created"
+    extractor = AsyncMock()
+    extractor.extract.return_value = _ok_extraction(category="A-only")
+    target_registry = TargetRegistry(settings)
+    target_registry.load_initial()
+    ai_registry = AiProfileRegistry(settings, feishu)
+    await ai_registry.load_initial()
+
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = target_registry
+        app.state.ai_registry = ai_registry
+        app.state.feishu_client = feishu
+        app.state.ai_extractor = extractor
+        app.state.ai_pipeline = AiPipeline(settings, extractor, feishu)
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            headers = {"X-Admin-Token": ADMIN_TOKEN}
+            before = await client.get("/admin/config/targets", headers=headers)
+            targets = before.json()["targets"]
+            assert all("bill_app_token" not in target and "bill_table_id" not in target for target in targets)
+            inherited = await client.get("/admin/ai/profile", headers=headers)
+            assert inherited.status_code == 200, inherited.text
+            assert inherited.json()["book_alias"] == "2026"
+            assert inherited.json()["bill_destination"] == {"app_token": "bascn-bill", "table_id": "tbl-bill", "source": "profile"}
+            for target, token, table in zip(targets, ("bill-A", "bill-B"), ("table-A", "table-B"), strict=True):
+                target.update(bill_app_token=token, bill_table_id=table)
+            saved = await client.put("/admin/config/targets", headers=headers, json={
+                "default_alias": "2026", "targets": targets, "base_generation": before.json()["generation"],
+            })
+            assert saved.status_code == 200, saved.text
+            reloaded = await client.post("/admin/config/reload", headers=headers)
+            assert reloaded.status_code == 200, reloaded.text
+            fetched = await client.get("/admin/config/targets", headers=headers)
+            pairs = {t["alias"]: (t["bill_app_token"], t["bill_table_id"]) for t in fetched.json()["targets"]}
+            assert pairs == {"2026": ("bill-A", "table-A"), "2025": ("bill-B", "table-B")}
+            persisted = tomllib.loads(targets_file.read_text(encoding="utf-8"))["targets"]
+            assert {alias: (entry["bill_app_token"], entry["bill_table_id"]) for alias, entry in persisted.items()} == pairs
+
+            for alias, token, table, option, encoded in (
+                ("2026", "bill-A", "table-A", "A-only", "A-only"),
+                ("2025", "bill-B", "table-B", "B-only", "其他"),
+            ):
+                inspect = await client.get("/admin/ai/profile", params={"book_alias": alias}, headers=headers)
+                assert inspect.status_code == 200, inspect.text
+                assert inspect.json()["bill_destination"] == {"app_token": token, "table_id": table, "source": "target"}
+                assert set(inspect.json()["whitelists"]["分类"]) == {"其他", option}
+                dry = await client.post("/admin/ai/test", headers=headers, json={"book_alias": alias, "text": "same OCR"})
+                assert dry.status_code == 200, dry.text
+                assert dry.json()["bill_destination"] == inspect.json()["bill_destination"]
+                assert dry.json()["bill_fields"]["分类"] == encoded
+            feishu.update_original_text.assert_not_awaited()
+            feishu.update_record_field.assert_not_awaited()
+            feishu.create_record.assert_not_awaited()
+            for alias in ("2026", "2025"):
+                response = await client.post("/v1/webhook/ocr", headers={"X-Webhook-Token": WEBHOOK_TOKEN}, json={"book_alias": alias, "original_text": "same OCR"})
+                assert response.status_code == 200, response.text
+                assert response.json()["ai_status"] == "succeeded"
+
+    assert [(c.kwargs["original_text"], c.kwargs["target"].record_id) for c in feishu.update_original_text.await_args_list] == [("same OCR", "rec_2026"), ("same OCR", "rec_2025")]
+    assert [(c.args[0], c.args[1], c.args[2].record_id) for c in feishu.update_record_field.await_args_list] == [("精简原始数据", _ok_extraction().summary, "rec_2026"), ("精简原始数据", _ok_extraction().summary, "rec_2025")]
+    assert [(c.args[1], c.args[2], c.args[0]["分类"]) for c in feishu.create_record.await_args_list] == [("bill-A", "table-A", "A-only"), ("bill-B", "table-B", "其他")]
+
+
+async def test_legacy_target_inherits_profile_for_admin_and_webhook(profile_file):
+    profile_data = _profile_dict()
+    profile_data["extract"] = {"summary_field": profile_data.pop("summary_field")}
+    profile_file.write_text(dump_profile(profile_data), encoding="utf-8")
+    settings = replace(_dynamic_settings(None, profile_file), feishu_app_token="legacy-app", feishu_table_id="legacy-table", feishu_record_id="legacy-record")
+    feishu = AsyncMock()
+    feishu.list_fields.return_value = _SCHEMA
+    feishu.update_original_text.return_value = "legacy-record"
+    feishu.create_record.return_value = "legacy-bill"
+    extractor = AsyncMock()
+    extractor.extract.return_value = _ok_extraction()
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    registry = AiProfileRegistry(settings, feishu)
+    await registry.load_initial()
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        app.state.ai_extractor = extractor
+        app.state.ai_pipeline = AiPipeline(settings, extractor, feishu)
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            inspection = await client.get("/admin/ai/profile", headers={"X-Admin-Token": ADMIN_TOKEN})
+            assert inspection.status_code == 200
+            assert inspection.json()["book_alias"] == "default"
+            assert inspection.json()["bill_destination"] == {"app_token": "bascn-bill", "table_id": "tbl-bill", "source": "profile"}
+            result = await client.post("/v1/webhook/ocr", headers={"X-Webhook-Token": WEBHOOK_TOKEN}, json={"original_text": "legacy OCR"})
+            assert result.status_code == 200, result.text
+            assert result.json()["ai_status"] == "succeeded"
+    assert feishu.update_original_text.await_args.kwargs["target"].record_id == "legacy-record"
+    assert feishu.create_record.await_args.args[1:] == ("bascn-bill", "tbl-bill")
+
+
+async def test_unreachable_override_recovers_without_cross_book_fallback(targets_file, profile_file):
+    profile_data = _profile_dict()
+    profile_data["extract"] = {"summary_field": profile_data.pop("summary_field")}
+    profile_file.write_text(dump_profile(profile_data), encoding="utf-8")
+    targets_file.write_text(_targets_toml([("2026", 2026), ("2025", 2025)]) + '\nbill_app_token = "bad-app"\nbill_table_id = "bad-table"\n', encoding="utf-8")
+    settings = _dynamic_settings(targets_file, profile_file)
+    available = {"bad": False}
+    async def list_fields(token, table):
+        if (token, table) == ("bad-app", "bad-table") and not available["bad"]:
+            raise FeishuClientError("unavailable", stage="list_fields")
+        return _SCHEMA
+    feishu = AsyncMock()
+    feishu.list_fields.side_effect = list_fields
+    feishu.update_original_text.side_effect = lambda original_text, target: target.record_id
+    feishu.create_record.return_value = "bill-record"
+    extractor = AsyncMock()
+    extractor.extract.return_value = _ok_extraction()
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    registry = AiProfileRegistry(settings, feishu)
+    await registry.load_initial()
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.feishu_client = feishu
+        app.state.ai_extractor = extractor
+        app.state.ai_pipeline = AiPipeline(settings, extractor, feishu)
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            headers = {"X-Webhook-Token": WEBHOOK_TOKEN}
+            payload = {"book_alias": "2025", "original_text": "retry OCR"}
+            failed = await client.post("/v1/webhook/ocr", headers=headers, json=payload)
+            assert failed.status_code == 503, failed.text
+            assert failed.json()["detail"]["error"]["code"] == "AI_PROFILE_UNAVAILABLE"
+            assert feishu.update_original_text.await_args.kwargs["target"].record_id == "rec_2025"
+            extractor.extract.assert_not_awaited()
+            feishu.update_record_field.assert_not_awaited()
+            feishu.create_record.assert_not_awaited()
+            healthy = await client.post("/v1/webhook/ocr", headers=headers, json={"book_alias": "2026", "original_text": "healthy OCR"})
+            assert healthy.status_code == 200 and healthy.json()["ai_status"] == "succeeded"
+            assert feishu.create_record.await_args.args[1:] == ("bascn-bill", "tbl-bill")
+            available["bad"] = True
+            recovered = await client.post("/v1/webhook/ocr", headers=headers, json=payload)
+            assert recovered.status_code == 200 and recovered.json()["ai_status"] == "succeeded"
+            assert feishu.create_record.await_args.args[1:] == ("bad-app", "bad-table")

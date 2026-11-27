@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ from .ai_profile import (
     AiProfileRegistryUnavailableError,
     ProfileConfigError,
     build_field_prompts,
+    validate_bill_schema,
     validate_profile_candidate,
 )
 from .config import Settings, get_settings
@@ -234,6 +236,10 @@ async def ingest_ocr(
     )
 
     try:
+        if "book_alias" in payload.model_fields_set and payload.book_alias is None:
+            raise TargetSelectorError("book_alias must not be null")
+        if "year" in payload.model_fields_set and payload.year is None:
+            raise TargetSelectorError("year must not be null")
         target_registry.maybe_reload()
         target = target_registry.resolve(book_alias=payload.book_alias, year=payload.year)
         record_id = await feishu_client.update_original_text(original_text=original_text, target=target)
@@ -409,8 +415,9 @@ async def ingest_ocr(
         try:
             await ai_registry.maybe_reload()
             snapshot = ai_registry.get_snapshot()
+            context = await ai_registry.get_context(snapshot, target)
         except AiProfileRegistryUnavailableError as exc:
-            logger.exception("ai profile registry unavailable request_id=%s", request_id)
+            logger.error("ai profile registry unavailable request_id=%s", request_id)
             if history_row_id is not None:
                 await _finish_history(history_row_id, "failed", error="profile registry unavailable")
             else:
@@ -429,8 +436,7 @@ async def ingest_ocr(
         result: PipelineResult = await ai_pipeline.run(
             original_text=original_text,
             target=target,
-            profile=snapshot.profile,
-            option_whitelists=snapshot.option_whitelists,
+            context=context,
         )
         ai_status = result.ai_status
         ai_record_id = result.bill_record_id
@@ -557,6 +563,7 @@ class AiTestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(..., min_length=1, max_length=32768)
+    book_alias: str | None = None
 
 
 def _admin_auth_error(code: str, message: str, request_id: str) -> HTTPException:
@@ -572,6 +579,17 @@ def _admin_auth_error(code: str, message: str, request_id: str) -> HTTPException
             "error": {"code": code, "message": message},
         },
     )
+
+
+def _admin_target(request: Request, book_alias: str | None, request_id: str) -> FeishuTargetConfig:
+    registry: TargetRegistry = request.app.state.target_registry
+    try:
+        registry.maybe_reload()
+        return registry.resolve(book_alias=book_alias, year=None)
+    except TargetSelectorError as exc:
+        raise HTTPException(status_code=422, detail={"success": False, "request_id": request_id, "error": {"code": "INVALID_TARGET_SELECTOR", "message": str(exc)}}) from exc
+    except TargetRegistryError as exc:
+        raise HTTPException(status_code=503, detail={"success": False, "request_id": request_id, "error": {"code": "TARGET_REGISTRY_UNAVAILABLE", "message": str(exc)}}) from exc
 
 
 @app.post(
@@ -609,11 +627,15 @@ async def ai_test_dry_run(
 
     # Dry run: registry reload (mirrors ingest_ocr). Fail-closed registry → 503
     # (a bad profile cannot guarantee safe single_select encoding).
+    if "book_alias" in payload.model_fields_set and payload.book_alias is None:
+        raise HTTPException(status_code=422, detail={"success": False, "request_id": request_id, "error": {"code": "INVALID_TARGET_SELECTOR", "message": "book_alias must not be null"}})
+    target = _admin_target(request, payload.book_alias, request_id)
     try:
         await ai_registry.maybe_reload()
         snapshot = ai_registry.get_snapshot()
+        context = await ai_registry.get_context(snapshot, target)
     except AiProfileRegistryUnavailableError as exc:
-        logger.exception("ai profile registry unavailable request_id=%s", request_id)
+        logger.error("ai profile registry unavailable request_id=%s", request_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -624,7 +646,8 @@ async def ai_test_dry_run(
         ) from exc
 
     extractor: AiExtractor | None = getattr(request.app.state, "ai_extractor", None)
-    field_prompts = build_field_prompts(snapshot.profile, snapshot.option_whitelists)
+    field_prompts = build_field_prompts(snapshot.profile, context.option_whitelists)
+    destination = {"app_token": context.bill_app_token, "table_id": context.bill_table_id, "source": context.source}
 
     try:
         extraction: ExtractionResult = await extractor.extract(
@@ -636,14 +659,16 @@ async def ai_test_dry_run(
         logger.warning(
             "ai dry-run extract failed request_id=%s stage=%s", request_id, exc.stage
         )
-        return {"ai_status": "failed", "error": str(exc)}
+        return {"ai_status": "failed", "error": str(exc), "book_alias": target.alias, "bill_destination": destination}
 
     extract_fields, bill_fields, warnings = encode_fields(
-        extraction, list(snapshot.profile.fields), snapshot.option_whitelists
+        extraction, list(snapshot.profile.fields), context.option_whitelists
     )
 
     return {
         "ai_status": "succeeded",
+        "book_alias": target.alias,
+        "bill_destination": destination,
         "extracted": {
             "summary": extraction.summary,
             "description": extraction.description,
@@ -668,6 +693,7 @@ async def ai_test_dry_run(
 )
 async def ai_profile_inspect(
     request: Request,
+    book_alias: str | None = Query(default=None),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
 ) -> dict[str, object]:
@@ -697,16 +723,31 @@ async def ai_profile_inspect(
         "timeout_seconds": settings.ai_timeout_seconds,
         "dedup_ttl_seconds": settings.ai_dedup_ttl_seconds,
         "registry": ai_registry.get_status(),
+        "book_alias": None,
+        "bill_destination": None,
     }
+
+    try:
+        target = _admin_target(request, book_alias, request_id)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        base["profile"] = None
+        base["whitelists"] = None
+        base["destination_error"] = "target registry unavailable"
+        return base
+    base["book_alias"] = target.alias
 
     # Fail-closed branch: get_snapshot raises. The route stays 200 (NEITHER 500
     # NOR 503) so admin tooling can render degraded diagnostics. The base body
     # already carries registry.config_valid=false + last_reload_error.
     try:
         snapshot = ai_registry.get_snapshot()
+        context = await ai_registry.get_context(snapshot, target)
     except AiProfileRegistryUnavailableError:
         base["profile"] = None
         base["whitelists"] = None
+        base["destination_error"] = "ai profile or selected destination unavailable"
         return base
 
     base["profile"] = {
@@ -717,9 +758,10 @@ async def ai_profile_inspect(
         },
         "fields": [_field_spec_to_dict(spec) for spec in snapshot.profile.fields],
     }
+    base["bill_destination"] = {"app_token": context.bill_app_token, "table_id": context.bill_table_id, "source": context.source}
     base["whitelists"] = {
         field: sorted(options)
-        for field, options in snapshot.option_whitelists.items()
+        for field, options in context.option_whitelists.items()
     }
     return base
 
@@ -1095,7 +1137,61 @@ async def feishu_picker_parse_url(
 # Module-level write mutex — one in-flight profile save at a time. Persists
 # across requests; tests reset app.state per-case but the lock itself is just
 # a mutex (never holds profile data).
-_profile_write_lock = asyncio.Lock()
+_config_write_lock = asyncio.Lock()
+
+
+class _SchemaLookup:
+    def __init__(self, feishu: FeishuClient) -> None:
+        self._feishu = feishu
+        self._cache: dict[tuple[str, str], dict | FeishuClientError] = {}
+
+    async def list_fields(self, app_token: str, table_id: str) -> dict:
+        key = (app_token, table_id)
+        if key not in self._cache:
+            try:
+                self._cache[key] = await self._feishu.list_fields(app_token, table_id)
+            except FeishuClientError as exc:
+                self._cache[key] = exc
+        result = self._cache[key]
+        if isinstance(result, FeishuClientError):
+            raise result
+        return result
+
+
+async def _validate_book_schemas(profile: AiProfile, targets: list[FeishuTargetConfig], feishu: FeishuClient) -> list[dict]:
+    cache: dict[tuple[str, str], dict | FeishuClientError] = {}
+    errors: list[dict] = []
+    for index, target in enumerate(targets):
+        if not target.enabled:
+            continue
+        extract_key = (target.app_token, target.table_id)
+        bill_key = (target.bill_app_token or profile.bill_app_token, target.bill_table_id or profile.bill_table_id)
+        for key in (extract_key, bill_key):
+            if key not in cache:
+                try:
+                    cache[key] = await feishu.list_fields(*key)
+                except FeishuClientError as exc:
+                    cache[key] = exc
+        extract = cache[extract_key]
+        bill = cache[bill_key]
+        if isinstance(extract, FeishuClientError):
+            errors.append({"path": f"targets[{index}].extract", "message": "extract table lookup failed"})
+        elif profile.summary_field not in extract:
+            errors.append({"path": f"targets[{index}].extract.summary_field", "message": "summary field not found"})
+        if isinstance(bill, FeishuClientError):
+            errors.append({"path": f"targets[{index}].bill", "message": "bill table lookup failed"})
+        else:
+            errors.extend({"path": f"targets[{index}].{error['path']}", "message": error["message"]} for error in validate_bill_schema(profile, bill))
+    return errors
+
+
+def _check_config_generations(target_registry: TargetRegistry, ai_registry: AiProfileRegistry | None, target_generation: int, profile_generation: int | None, request_id: str) -> None:
+    try:
+        stale = target_registry.get_snapshot().generation != target_generation or (ai_registry is not None and ai_registry.get_snapshot().generation != profile_generation)
+    except (TargetRegistryUnavailableError, AiProfileRegistryUnavailableError):
+        stale = True
+    if stale:
+        raise HTTPException(status_code=409, detail={"success": False, "request_id": request_id, "error": {"code": "STALE_WRITE", "message": "configuration changed during validation"}})
 
 
 def _profile_to_editable(profile: AiProfile) -> dict[str, object]:
@@ -1247,7 +1343,7 @@ async def config_profile_put(
             },
         )
 
-    async with _profile_write_lock:
+    async with _config_write_lock:
         registry_status = ai_registry.get_status()
         current_generation = registry_status.get("generation", 0)
         if current_generation != payload.base_generation:
@@ -1271,6 +1367,8 @@ async def config_profile_put(
         # default_alias). TargetSelectorError → 422 (mirrors ingest_ocr).
         target_registry: TargetRegistry = request.app.state.target_registry
         try:
+            target_snapshot = target_registry.get_snapshot()
+            profile_generation = ai_registry.get_snapshot().generation
             target = target_registry.resolve(book_alias=None, year=None)
         except TargetSelectorError as exc:
             raise HTTPException(
@@ -1296,6 +1394,8 @@ async def config_profile_put(
                     },
                 },
             ) from exc
+        except AiProfileRegistryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail={"success": False, "request_id": request_id, "error": {"code": "AI_PROFILE_UNAVAILABLE", "message": str(exc)}}) from exc
 
         # Convert the editable shape (top-level summary_field) to the
         # dump_profile input shape (extract.summary_field).
@@ -1308,13 +1408,16 @@ async def config_profile_put(
         }
         candidate_text = dump_profile(dump_input)
 
-        feishu_client: FeishuClient = request.app.state.feishu_client
+        feishu_client = _SchemaLookup(request.app.state.feishu_client)
         _validated_profile, _whitelists, errors = await validate_profile_candidate(
             candidate_text,
             feishu_client,
             target.app_token,
             target.table_id,
         )
+        if _validated_profile is not None:
+            errors.extend(await _validate_book_schemas(_validated_profile, list(target_snapshot.targets_by_alias.values()), feishu_client))
+        _check_config_generations(target_registry, ai_registry, target_snapshot.generation, profile_generation, request_id)
         if errors:
             logger.warning(
                 "config profile PUT validation failed request_id=%s errors=%s",
@@ -1339,7 +1442,10 @@ async def config_profile_put(
                 bak_path.write_bytes(profile_file.read_bytes())
             tmp_path = profile_file.with_suffix(".toml.tmp")
             tmp_path.write_text(candidate_text, encoding="utf-8")
-            os.replace(tmp_path, profile_file)
+            _check_config_generations(target_registry, ai_registry, target_snapshot.generation, profile_generation, request_id)
+            installed = ai_registry.install_candidate(_validated_profile, _whitelists, tmp_path, profile_generation)
+        except AiProfileRegistryUnavailableError as exc:
+            raise HTTPException(status_code=409, detail={"success": False, "request_id": request_id, "error": {"code": "STALE_WRITE", "message": "configuration changed during validation"}}) from exc
         except OSError as exc:
             # :ro mount (Docker) or permission issue — surface a host-edit hint.
             if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
@@ -1360,14 +1466,9 @@ async def config_profile_put(
                 ) from exc
             raise
 
-        # Reload the registry so the new generation reflects the saved file.
-        # reload(force=True) returns get_status(); we surface the new generation.
-        await ai_registry.reload(force=True)
-        new_status = ai_registry.get_status()
-
     return {
         "success": True,
-        "generation": new_status.get("generation", 0),
+        "generation": installed.generation,
         "warnings": [],
     }
 
@@ -1377,20 +1478,15 @@ async def config_profile_put(
 #
 # GET /admin/config/targets  : registry snapshot (degrades 200 on fail-closed;
 #                              legacy mode returns the single legacy target)
-# PUT /admin/config/targets  : validate → atomic save (tmp + os.replace) → reload
+# PUT /admin/config/targets  : validate → atomic save and snapshot install
 #
 # PUT is full-replace: the body's targets list wholly replaces the file. Legacy
 # mode (FEISHU_TARGETS_FILE unset) → 409 LEGACY_MODE (UI editing not supported).
 # Auth mirrors reload_config (X-Admin-Token + compare_digest; CONFIG_RELOAD_TOKEN
-# unset → 404 RELOAD_DISABLED). PUT serializes via a module-level asyncio.Lock
-# (distinct from _profile_write_lock — two files, independent) + generation guard
+# unset → 404 RELOAD_DISABLED). PUT shares a config write lock + generation guard
 # (STALE_WRITE 409). The webhook contract is unchanged.
 # ---------------------------------------------------------------------------
 
-# Module-level write mutex — one in-flight targets save at a time. Distinct from
-# _profile_write_lock (the two files are independent; no reason for one edit to
-# block the other).
-_targets_write_lock = asyncio.Lock()
 
 # Alias regex mirrored from target_registry._ALIAS_PATTERN — duplicated here so
 # the PUT endpoint can attribute errors to targets[i].alias without importing a
@@ -1492,6 +1588,12 @@ def _collect_target_errors(
                 "message": f"target {alias or i} has invalid enabled (must be bool)",
             })
 
+        if "bill_app_token" in raw or "bill_table_id" in raw:
+            for field_name in ("bill_app_token", "bill_table_id"):
+                value = raw.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append({"path": f"targets[{i}].{field_name}", "message": f"{field_name} must be a non-empty string"})
+
         if alias is not None:
             valid_targets[alias] = raw
 
@@ -1533,6 +1635,9 @@ def _body_to_dump_input(body: dict) -> dict:
             "year": t.get("year"),
             "enabled": t.get("enabled", True),
         }
+        for field_name in ("bill_app_token", "bill_table_id"):
+            if field_name in t:
+                entry[field_name] = t[field_name].strip()
         targets_dict[alias] = entry
     return {"default_alias": body["default_alias"], "targets": targets_dict}
 
@@ -1580,6 +1685,7 @@ async def config_targets_get(
             "record_id": t.record_id,
             "original_field_name": t.original_field_name,
             "enabled": t.enabled,
+            **({"bill_app_token": t.bill_app_token, "bill_table_id": t.bill_table_id} if t.bill_app_token is not None else {}),
         }
         for t in snapshot.targets_by_alias.values()
     ]
@@ -1640,7 +1746,7 @@ async def config_targets_put(
 
     target_registry: TargetRegistry = request.app.state.target_registry
 
-    async with _targets_write_lock:
+    async with _config_write_lock:
         # Generation guard — describe()["reload_generation"] is the canonical
         # key (asymmetric with the AI registry's "generation" key; mirrors the
         # real TargetRegistry.describe()).
@@ -1680,6 +1786,27 @@ async def config_targets_put(
 
         # Body → dump_targets input shape (list → dict keyed by alias).
         dump_input = _body_to_dump_input(payload.model_dump())
+        try:
+            candidates, aliases_by_year, default_alias = validate_targets(dump_input, original_field_name_default=settings.feishu_original_field_name)
+        except TargetRegistryConfigError as exc:
+            raise HTTPException(status_code=422, detail={"success": False, "request_id": request_id, "errors": [{"path": "targets", "message": str(exc)}]}) from exc
+        target_snapshot = target_registry.get_snapshot()
+        if target_snapshot.generation != payload.base_generation:
+            raise HTTPException(status_code=409, detail={"success": False, "request_id": request_id, "error": {"code": "STALE_WRITE", "message": "configuration changed during validation"}})
+        candidate = replace(target_snapshot, default_alias=default_alias, targets_by_alias=candidates, aliases_by_year=aliases_by_year)
+        ai_registry: AiProfileRegistry | None = getattr(request.app.state, "ai_registry", None) if settings.ai_enabled else None
+        if settings.ai_enabled and ai_registry is None:
+            raise HTTPException(status_code=503, detail={"success": False, "request_id": request_id, "error": {"code": "AI_PROFILE_UNAVAILABLE", "message": "ai profile registry is unavailable"}})
+        try:
+            profile_snapshot = ai_registry.get_snapshot() if ai_registry is not None else None
+        except AiProfileRegistryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail={"success": False, "request_id": request_id, "error": {"code": "AI_PROFILE_UNAVAILABLE", "message": str(exc)}}) from exc
+        if profile_snapshot is not None:
+            errors = await _validate_book_schemas(profile_snapshot.profile, list(candidates.values()), request.app.state.feishu_client)
+            _check_config_generations(target_registry, ai_registry, target_snapshot.generation, profile_snapshot.generation, request_id)
+            if errors:
+                raise HTTPException(status_code=422, detail={"success": False, "request_id": request_id, "errors": errors})
+        _check_config_generations(target_registry, ai_registry, target_snapshot.generation, profile_snapshot.generation if profile_snapshot else None, request_id)
         candidate_text = dump_targets(dump_input)
 
         # Atomic save: .bak the current file → write tmp → os.replace(tmp, real).
@@ -1691,7 +1818,10 @@ async def config_targets_put(
                 bak_path.write_bytes(targets_file.read_bytes())
             tmp_path = targets_file.with_suffix(".toml.tmp")
             tmp_path.write_text(candidate_text, encoding="utf-8")
-            os.replace(tmp_path, targets_file)
+            _check_config_generations(target_registry, ai_registry, target_snapshot.generation, profile_snapshot.generation if profile_snapshot else None, request_id)
+            installed = target_registry.install_candidate(candidate, tmp_path)
+        except TargetRegistryUnavailableError as exc:
+            raise HTTPException(status_code=409, detail={"success": False, "request_id": request_id, "error": {"code": "STALE_WRITE", "message": "configuration changed during validation"}}) from exc
         except OSError as exc:
             if exc.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
                 raise HTTPException(
@@ -1711,13 +1841,9 @@ async def config_targets_put(
                 ) from exc
             raise
 
-        # Reload the registry so the new generation reflects the saved file.
-        target_registry.reload(force=True)
-        new_describe = target_registry.describe()
-
     return {
         "success": True,
-        "generation": new_describe.get("reload_generation", 0),
+        "generation": installed.generation,
     }
 
 

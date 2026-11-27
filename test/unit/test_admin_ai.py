@@ -26,6 +26,7 @@ from httpx import ASGITransport
 
 from app.ai_extractor import AiExtractorError, ExtractionResult
 from app.ai_profile import (
+    AiDestinationContext,
     AiProfile,
     AiProfileRegistryUnavailableError,
     AiProfileSnapshot,
@@ -139,6 +140,10 @@ def _mock_registry_healthy() -> AsyncMock:
     registry = AsyncMock()
     registry.maybe_reload = AsyncMock(return_value=None)
     registry.get_snapshot = MagicMock(return_value=_stub_snapshot())
+    registry.get_context = AsyncMock(side_effect=lambda snapshot, target: AiDestinationContext(
+        snapshot, snapshot.profile.bill_app_token, snapshot.profile.bill_table_id,
+        "profile", {name: frozenset(values) for name, values in snapshot.option_whitelists.items()},
+    ))
     registry.get_status = MagicMock(
         return_value={
             "generation": 1,
@@ -147,6 +152,51 @@ def _mock_registry_healthy() -> AsyncMock:
         }
     )
     return registry
+
+
+async def test_selected_book_inspection_and_dry_run_use_same_destination(tmp_path):
+    from app.target_registry import TargetRegistry
+    from app.toml_writer import dump_targets
+
+    path = tmp_path / "targets.toml"
+    path.write_text(dump_targets({"default_alias": "a", "targets": {
+        alias: {"app_token": "extract", "table_id": f"extract-{alias}", "record_id": f"record-{alias}", "bill_app_token": "bill", "bill_table_id": f"bill-{alias}"}
+        for alias in ("a", "b")
+    }}), encoding="utf-8")
+    settings = replace(_enabled_settings(), feishu_targets_file=path)
+    targets = TargetRegistry(settings)
+    targets.load_initial()
+    registry = _mock_registry_healthy()
+    registry.get_context = AsyncMock(side_effect=lambda snapshot, target: AiDestinationContext(
+        snapshot, target.bill_app_token, target.bill_table_id, "target",
+        {**{name: frozenset(values) for name, values in _WHITELISTS.items()}, "分类": frozenset({"其他", target.alias})},
+    ))
+    feishu = _mock_feishu_spy()
+    extractor = _mock_extractor(_ok_extraction(category="b"))
+    async with lifespan(app):
+        app.state.settings = settings
+        app.state.target_registry = targets
+        app.state.ai_registry = registry
+        app.state.ai_extractor = extractor
+        app.state.feishu_client = feishu
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            headers = {"X-Admin-Token": ADMIN_TOKEN}
+            inspected = await client.get("/admin/ai/profile", params={"book_alias": "b"}, headers=headers)
+            dry_run = await client.post("/admin/ai/test", json={"text": SAMPLE_TEXT, "book_alias": "b"}, headers=headers)
+            default = await client.get("/admin/ai/profile", headers=headers)
+            unknown = await client.get("/admin/ai/profile", params={"book_alias": "unknown"}, headers=headers)
+            null_selector = await client.post("/admin/ai/test", json={"text": SAMPLE_TEXT, "book_alias": None}, headers=headers)
+    assert inspected.status_code == dry_run.status_code == default.status_code == 200
+    assert inspected.json()["bill_destination"] == dry_run.json()["bill_destination"] == {"app_token": "bill", "table_id": "bill-b", "source": "target"}
+    assert inspected.json()["whitelists"]["分类"] == ["b", "其他"]
+    assert dry_run.json()["bill_fields"]["分类"] == "b"
+    assert default.json()["book_alias"] == "a"
+    assert unknown.status_code == 422
+    assert null_selector.status_code == 422
+    assert null_selector.json()["detail"]["error"]["code"] == "INVALID_TARGET_SELECTOR"
+    feishu.create_record.assert_not_awaited()
+    feishu.update_record_field.assert_not_awaited()
+    feishu.update_original_text.assert_not_awaited()
 
 
 def _mock_registry_fail_closed() -> AsyncMock:
@@ -448,6 +498,21 @@ async def test_get_profile_healthy():
 
 
 # --- Test 7: GET /admin/ai/profile fail-closed → 200 degraded (NOT 503) ---
+
+
+async def test_get_profile_target_registry_unavailable_returns_diagnostics():
+    from app.target_registry import TargetRegistryUnavailableError
+
+    async with lifespan(app):
+        app.state.settings = _enabled_settings()
+        app.state.ai_registry = _mock_registry_healthy()
+        app.state.target_registry.maybe_reload = MagicMock(side_effect=TargetRegistryUnavailableError("unavailable"))
+        async with httpx.AsyncClient(transport=ASGITransport(app), base_url=TEST_BASE_URL) as client:
+            response = await client.get("/admin/ai/profile", headers={"X-Admin-Token": ADMIN_TOKEN})
+    assert response.status_code == 200
+    assert response.json()["bill_destination"] is None
+    assert response.json()["whitelists"] is None
+    assert response.json()["destination_error"]
 
 
 async def test_get_profile_fail_closed_returns_200_degraded():
