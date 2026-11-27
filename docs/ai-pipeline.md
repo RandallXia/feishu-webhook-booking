@@ -37,7 +37,7 @@ POST /v1/webhook/ocr  (original_text)
 [4] ai_registry.maybe_reload() → snapshot             ← mtime 热重载 + 白名单快照
         │
         ▼
-[5] pipeline.run(text, target, profile, whitelists)
+[5] 校验选中账本的账单表和选项 → pipeline.run(text, target, context)
         │
         ├─ dedup 命中 → ai_status="duplicate" (跳过 AI 调用)
         │
@@ -45,7 +45,7 @@ POST /v1/webhook/ocr  (original_text)
         │
         ├─ field_codec.encode_fields(result, specs, whitelists)
         │     ├─ extract_fields  → 回写「精简原始数据」(best-effort)
-        │     └─ bill_fields     → 创建「账单明细」记录(client_token 幂等)
+        │     └─ bill_fields     → 在选中的账单表创建记录
         │
         └─ PipelineResult(ai_status, bill_record_id, warnings, extracted)
         │
@@ -69,7 +69,7 @@ POST /v1/webhook/ocr  (original_text)
 | `AI_TIMEOUT_SECONDS` | 可选 | `20` | 单次 AI 调用 HTTP 超时；超时即 `AiExtractorError(stage="request")`，不重试 |
 | `AI_PROFILE_FILE` | `AI_ENABLED=true` | — | 指向 `ai-profile.toml` 路径；`:ro` 挂载即可，mtime 热重载 |
 | `AI_PROFILE_RELOAD_INTERVAL_SECONDS` | 可选 | `10` | profile 热重载最小间隔（mtime 检查节流） |
-| `AI_DEDUP_TTL_SECONDS` | 可选 | `300` | 同一 `(alias, original_text)` 的去重窗口；命中即 `ai_status="duplicate"`，不调 AI、不建记录 |
+| `AI_DEDUP_TTL_SECONDS` | 可选 | `300` | 同一账本、有效账单目标和规范化原文的进程内去重窗口；不保证并发或跨进程恰好一次 |
 | `AI_FORCE_TOOL_CALL` | 可选 | `true` | 是否强制发送 `tool_choice` 参数。某些 relay（如阿里云通义 thinking 模式）不支持 `tool_choice` 会返回 400，将该值设为 `false` 即可关闭 |
 
 ### `AI_BASE_URL` 拼接规则 / Concatenation rule
@@ -88,6 +88,10 @@ POST /v1/webhook/ocr  (original_text)
 ## 4. TOML 配置 Schema / TOML config schema
 
 模板见 [runtime/ai-profile.toml.example](../runtime/ai-profile.toml.example)。关键字段：
+
+`[bill]` 始终必填，是没有覆盖的账本和旧版单目标模式的全局目标。按账本覆盖的两账本示例见 [运行时配置](runtime-config.md)：`2025` 同时省略 `bill_app_token` 和 `bill_table_id` 并继承全局值，`2026` 同时指定两个非空字符串。只填一个、空白或错误类型均无效，即使目标被禁用也一样；移除两个键才能恢复继承。无效覆盖或不可访问的表绝不会回退到全局目标。
+
+所有账本共享 `[[fields]]` 映射和 fallback。飞书应用必须能访问每个提取表和有效账单表；每个账单表必须包含匹配的字段及类型，每个单选 fallback 必须存在于该表的选项中。各表的其他选项可以不同，提示词和编码使用选中表自己的选项。
 
 ```toml
 # prompt_header 必须放在所有 [section] 之前 —— TOML 规则：
@@ -161,7 +165,7 @@ prompt = ""
 - 选项列表非空
 - profile 里的 `fallback` 必须在选项列表内
 
-任一不满足 → `config_valid=False` → 路由 503 `AI_PROFILE_UNAVAILABLE`。这是防污染底线：避免 fallback 本身就是脏选项，导致飞书自动创建不可逆的脏选项。
+全局 profile 加载失败会使注册表 fail-closed；选中账本的目标表查询或 fallback 校验失败则返回 503 `AI_PROFILE_UNAVAILABLE`，不借用其他表的选项，也不阻塞有效账本。原文写入发生在校验之前，因此 503 时原文可能已保存，但不会调用 AI、写回摘要或创建账单。修复后重试会重新查询。
 
 ## 5. Webhook 响应字段 / Webhook response fields
 
@@ -215,7 +219,7 @@ Shortcut 可用如下文本模板生成「¥42 餐饮 已入账」通知：
 请求体：
 
 ```json
-{ "text": "粘贴一段 OCR 文本做测试" }
+{ "text": "粘贴一段 OCR 文本做测试", "book_alias": "2026" }
 ```
 
 响应（成功）：
@@ -223,6 +227,8 @@ Shortcut 可用如下文本模板生成「¥42 餐饮 已入账」通知：
 ```json
 {
   "ai_status": "succeeded",
+  "book_alias": "2026",
+  "bill_destination": { "app_token": "bascn_replace_me_bill_2026", "table_id": "tbl_replace_me_bill_2026", "source": "target" },
   "extracted": { "summary": "...", "description": "...", "amount": 42.0, ... },
   "bill_fields": { "金额": 42.0, "收支分类": "餐饮", ... },
   "summary_writeback": { "field": "精简原始数据", "value": "..." },
@@ -238,9 +244,13 @@ Shortcut 可用如下文本模板生成「¥42 餐饮 已入账」通知：
 
 `AiProfileRegistryUnavailableError`（profile 坏）→ 503，与 webhook 路由一致。
 
+`book_alias` 可省略，省略时选择默认账本；显式空、未知或禁用别名返回 422，不回退。响应的 `bill_destination.source` 为 `target` 或 `profile`。dry-run 不写飞书，也不参与去重。
+
 ### `GET /admin/ai/profile` — profile 巡检
 
 返回当前 profile + 白名单 + registry 状态。fail-closed 时仍 200（`profile` / `whitelists` 为 `null`，但 `registry.config_valid=false` + `last_reload_error` 透出，便于排障）。
+
+使用 `GET /admin/ai/profile?book_alias=2026` 查看选中账本的 `book_alias`、`bill_destination` 和该表的 `whitelists`；省略参数使用默认账本。不可用时巡检保留 200 和诊断状态，目的地或白名单可能为 `null`；无效的显式选择器返回 422。
 
 ### `GET /admin/ai` — 配置页
 
@@ -379,6 +389,7 @@ Only direct `/base/{app_token}?table={table_id}` links are supported (copy from 
 **提取表配置 / Extract table config**
 
 1. 账本别名增删改：每条 alias 一行，行内走 URL 解析 → 选表 → 记录选择器（`GET /admin/feishu/records` 分页拉取，每条带 `preview`）
+   每个账本可继承全局账单表或覆盖完整的 app token 和账单表。预览和 dry-run 选择账本并显示有效目标及来源，字段映射仍为全局共享。
 2. 「保存全部账本」→ `PUT /admin/config/targets`（校验 + 原子写 + 热重载）
 3. 「摘要字段」下拉：从默认账本对应提取表的真实字段列表填充（`GET /admin/feishu/fields`）；profile 未指定时按字段名含「精简/摘要」自动预选。这是唯一 `target=extract` 映射的编辑入口（保存随账单表卡片的「保存配置」一并写入 profile）
 
@@ -450,7 +461,7 @@ On save (`PUT /admin/config/profile`): skipped rows are dropped; the summary spe
 
 「OCR 流程测试」卡片直接调用**真实 webhook 路径** `POST /v1/webhook/ocr`：输入 OCR 文本 + `X-Webhook-Token`（与 iPhone Shortcut 中配置的一致，单独保存在本机 localStorage），点「发送」，请求体为 `{original_text, source: "admin-ocr-flow-test"}`。
 
-与第 7 节的 dry-run 不同，这条链路是**真实写入**：写「原始信息」→ AI 提取 → 写「精简原始数据」→ 创建「账单明细」记录。同一文本在 `AI_DEDUP_TTL_SECONDS`（默认 300s）内重发会命中去重（`ai_status="duplicate"`），不会重复创建账单记录。
+与第 7 节的 dry-run 不同，这条链路是**真实写入**：写「原始信息」→ AI 提取 → 写「精简原始数据」→ 创建「账单明细」记录。同一账本、有效账单目标和规范化文本的成功请求在去重窗口内重发会命中进程内去重，但不保证并发或跨进程恰好一次。
 
 结果区展示：
 
@@ -460,7 +471,7 @@ On save (`PUT /admin/config/profile`): skipped rows are dropped; the summary spe
 
 The "OCR Flow Tester" card calls the **real webhook path** `POST /v1/webhook/ocr`: enter OCR text + the `X-Webhook-Token` (the same token configured in the iPhone Shortcut, stored separately in the browser's localStorage) and click Send. The body is `{original_text, source: "admin-ocr-flow-test"}`.
 
-Unlike the dry-run in section 7, this is a **real write**: it writes 原始信息, runs AI extraction, writes 精简原始数据, and creates a 账单明细 record. Resending the same text within `AI_DEDUP_TTL_SECONDS` (default 300s) hits dedup (`ai_status="duplicate"`) and does not create a second bill record.
+Unlike dry-run, this is a **real write**. Successful requests with the same book, effective destination, and normalized text hit process-local dedup within the configured window. Concurrent or cross-process exactly-once delivery is not guaranteed.
 
 The result panel shows:
 

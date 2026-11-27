@@ -35,7 +35,7 @@ POST /v1/webhook/ocr  (original_text)
 [4] ai_registry.maybe_reload() → snapshot             ← mtime hot reload + whitelist snapshot
         │
         ▼
-[5] pipeline.run(text, target, profile, whitelists)
+[5] validate the selected bill table and options → pipeline.run(text, target, context)
         │
         ├─ dedup hit → ai_status="duplicate" (skips AI call)
         │
@@ -43,7 +43,7 @@ POST /v1/webhook/ocr  (original_text)
         │
         ├─ field_codec.encode_fields(result, specs, whitelists)
         │     ├─ extract_fields  → writeback to 精简原始数据 (best-effort)
-        │     └─ bill_fields     → create a 账单明细 record (client_token idempotent)
+        │     └─ bill_fields     → create a record in the selected bill table
         │
         └─ PipelineResult(ai_status, bill_record_id, warnings, extracted)
         │
@@ -67,7 +67,7 @@ All `AI_*` variables are optional when `AI_ENABLED=false` (`get_settings()` skip
 | `AI_TIMEOUT_SECONDS` | optional | `20` | Per-call HTTP timeout; timeout → `AiExtractorError(stage="request")`, no retry |
 | `AI_PROFILE_FILE` | `AI_ENABLED=true` | — | Path to `ai-profile.toml`; `:ro` mount is fine, mtime hot reload |
 | `AI_PROFILE_RELOAD_INTERVAL_SECONDS` | optional | `10` | Minimum interval between mtime checks for profile hot reload |
-| `AI_DEDUP_TTL_SECONDS` | optional | `300` | Dedup window for the same `(alias, original_text)`; a hit returns `ai_status="duplicate"` without calling AI or creating a record |
+| `AI_DEDUP_TTL_SECONDS` | optional | `300` | Process-local dedup window for the same book, effective bill destination, and normalized text; no concurrent or cross-process exactly-once guarantee |
 | `AI_FORCE_TOOL_CALL` | optional | `true` | Whether to send the `tool_choice` parameter. Set `false` if your relay rejects `tool_choice` (e.g. Aliyun Qwen thinking mode returns 400) |
 
 ### `AI_BASE_URL` concatenation rule
@@ -86,6 +86,10 @@ See [section 11](#11-ai_base_url-concatenation-rule) for details.
 ## 4. TOML config schema
 
 Template: [runtime/ai-profile.toml.example](../../runtime/ai-profile.toml.example). Key fields:
+
+`[bill]` remains required and is the global destination for books without overrides and for legacy single-target mode. The two-book example in [runtime config](runtime-config.md) has `2025` omit both `bill_app_token` and `bill_table_id` to inherit the global pair, while `2026` supplies both non-empty strings. A partial pair, whitespace-only value, or wrong type is invalid even for disabled targets; remove both keys to restore inheritance. An invalid override or inaccessible table never falls back to the global destination.
+
+All books share the same `[[fields]]` mappings and fallbacks. The Feishu app needs access to each extraction table and effective bill table. Each bill table must have matching mapped fields and types, and every single-select fallback must exist in that table's options. Other options may differ; prompts and encoding use the selected table's own options.
 
 ```toml
 # prompt_header MUST appear BEFORE any [section] header — TOML rule:
@@ -159,7 +163,7 @@ After loading the profile, `AiProfileRegistry._load_snapshot` calls `feishu.list
 - The option list is non-empty
 - The `fallback` from the profile is present in the option list
 
-Any failure → `config_valid=False` → the route returns 503 `AI_PROFILE_UNAVAILABLE`. This is the pollution-prevention bottom line: it prevents a fallback that is itself a dirty option from triggering Feishu to auto-create an irreversible dirty option.
+A global profile load failure leaves the registry fail-closed. A selected destination lookup or fallback validation failure returns 503 `AI_PROFILE_UNAVAILABLE`, without borrowing another table's options or blocking a healthy book. Original text is written before validation, so it may already be saved when 503 is returned; AI, summary writeback, and bill creation do not run. After correction, a retry repeats the lookup.
 
 ## 5. Webhook response fields
 
@@ -213,7 +217,7 @@ Does not write to Feishu. Runs `AiExtractor.extract` + `encode_fields` once and 
 Request body:
 
 ```json
-{ "text": "paste an OCR text sample to test" }
+{ "text": "paste an OCR text sample to test", "book_alias": "2026" }
 ```
 
 Response (success):
@@ -221,6 +225,8 @@ Response (success):
 ```json
 {
   "ai_status": "succeeded",
+  "book_alias": "2026",
+  "bill_destination": { "app_token": "bascn_replace_me_bill_2026", "table_id": "tbl_replace_me_bill_2026", "source": "target" },
   "extracted": { "summary": "...", "description": "...", "amount": 42.0, ... },
   "bill_fields": { "金额": 42.0, "收支分类": "餐饮", ... },
   "summary_writeback": { "field": "精简原始数据", "value": "..." },
@@ -236,9 +242,13 @@ Response (AI failure, still 200):
 
 `AiProfileRegistryUnavailableError` (bad profile) → 503, same as the webhook route.
 
+Omit `book_alias` to select the default book. An explicitly empty, unknown, or disabled alias returns 422 instead of falling back. The response's `bill_destination.source` is `target` or `profile`. Dry-run writes nothing to Feishu and does not use dedup.
+
 ### `GET /admin/ai/profile` — profile inspection
 
 Returns the current profile + whitelists + registry status. Still 200 when fail-closed (`profile` / `whitelists` are `null`, but `registry.config_valid=false` + `last_reload_error` are exposed for debugging).
+
+Use `GET /admin/ai/profile?book_alias=2026` to inspect the selected `book_alias`, `bill_destination`, and that table's `whitelists`; omission selects the default book. Inspection remains 200 with diagnostic state when unavailable, and destination or whitelists may be `null`. An invalid explicit selector returns 422.
 
 ### `GET /admin/ai` — config page
 
@@ -365,6 +375,7 @@ Config is split across two cards ("extract table" and "bill table"), each saved 
 **Extract table config**
 
 1. Alias CRUD: one row per alias; each row runs URL parse → table pick → record picker (`GET /admin/feishu/records`, paginated, each with a `preview`)
+   Each book can inherit the global bill table or override it with a complete app-token and table pair. The book selector for inspection and dry-run shows the effective destination and source; bill-field mappings remain shared globally.
 2. "Save All" → `PUT /admin/config/targets` (validate + atomic write + hot reload)
 3. "Summary Field" dropdown: populated from the real field list of the default alias's extract table (`GET /admin/feishu/fields`); auto-prefilled by the 精简/摘要 name heuristic when the profile has none. This is the only editor for the `target=extract` mapping (persisted with the bill card's "Save Profile")
 
@@ -401,7 +412,7 @@ On save (`PUT /admin/config/profile`): skipped rows are dropped; the summary spe
 
 The "OCR Flow Tester" card calls the **real webhook path** `POST /v1/webhook/ocr`: enter OCR text + the `X-Webhook-Token` (the same token configured in the iPhone Shortcut, stored separately in the browser's localStorage) and click Send. The body is `{original_text, source: "admin-ocr-flow-test"}`.
 
-Unlike the dry-run in section 7, this is a **real write**: it writes 原始信息, runs AI extraction, writes 精简原始数据, and creates a 账单明细 record. Resending the same text within `AI_DEDUP_TTL_SECONDS` (default 300s) hits dedup (`ai_status="duplicate"`) and does not create a second bill record.
+Unlike dry-run, this is a **real write**. Successful requests with the same book, effective destination, and normalized text hit process-local dedup within the configured window. Concurrent or cross-process exactly-once delivery is not guaranteed.
 
 The result panel shows:
 
