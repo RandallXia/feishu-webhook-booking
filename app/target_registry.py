@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -40,6 +41,8 @@ class FeishuTargetConfig:
     record_id: str
     original_field_name: str
     enabled: bool
+    bill_app_token: str | None = None
+    bill_table_id: str | None = None
 
 
 def validate_targets(
@@ -102,6 +105,11 @@ def _parse_target(
     app_token = _required_target_value(alias, raw_target, "app_token")
     table_id = _required_target_value(alias, raw_target, "table_id")
     record_id = _required_target_value(alias, raw_target, "record_id")
+    bill_app_token = None
+    bill_table_id = None
+    if "bill_app_token" in raw_target or "bill_table_id" in raw_target:
+        bill_app_token = _required_target_value(alias, raw_target, "bill_app_token")
+        bill_table_id = _required_target_value(alias, raw_target, "bill_table_id")
     original_field_name = str(
         raw_target.get("original_field_name", original_field_name_default)
     ).strip()
@@ -123,6 +131,8 @@ def _parse_target(
         record_id=record_id,
         original_field_name=original_field_name or original_field_name_default,
         enabled=enabled,
+        bill_app_token=bill_app_token,
+        bill_table_id=bill_table_id,
     )
 
 
@@ -212,10 +222,31 @@ class TargetRegistry:
             raise TargetRegistryUnavailableError("target registry is temporarily unavailable")
         return snapshot
 
+    def install_candidate(
+        self, candidate: TargetRegistrySnapshot, temporary_file: Path
+    ) -> TargetRegistrySnapshot:
+        """Replace the file and publish the prepared snapshot under one lock."""
+        mtime = temporary_file.stat().st_mtime
+        with self._lock:
+            if not self._config_valid or self._snapshot is None or self._snapshot.generation != candidate.generation:
+                raise TargetRegistryUnavailableError("targets changed during save")
+            snapshot = TargetRegistrySnapshot(
+                mode=candidate.mode, default_alias=candidate.default_alias,
+                targets_by_alias=candidate.targets_by_alias, aliases_by_year=candidate.aliases_by_year,
+                loaded_at=time.time(), source_path=candidate.source_path,
+                source_mtime=mtime, generation=self._generation + 1,
+            )
+            os.replace(temporary_file, self._settings.feishu_targets_file)
+            self._generation = snapshot.generation
+            self._snapshot = snapshot
+            self._config_valid = True
+            self._last_reload_error = None
+            return snapshot
+
     def resolve(self, book_alias: str | None, year: int | None) -> FeishuTargetConfig:
         snapshot = self.get_snapshot()
 
-        if book_alias and year is not None:
+        if book_alias is not None and year is not None:
             alias_target = snapshot.targets_by_alias.get(book_alias)
             year_alias = snapshot.aliases_by_year.get(year)
             if alias_target is None or year_alias is None or alias_target.alias != year_alias:
@@ -224,7 +255,7 @@ class TargetRegistry:
                 raise TargetSelectorError("requested target is disabled")
             return alias_target
 
-        if book_alias:
+        if book_alias is not None:
             target = snapshot.targets_by_alias.get(book_alias)
             if target is None:
                 raise TargetSelectorError("unknown book alias")

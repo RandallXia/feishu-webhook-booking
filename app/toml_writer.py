@@ -18,6 +18,8 @@ _TARGET_KEY_ORDER = (
     "app_token",
     "table_id",
     "record_id",
+    "bill_app_token",
+    "bill_table_id",
     "original_field_name",
     "year",
     "enabled",

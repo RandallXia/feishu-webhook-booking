@@ -153,6 +153,19 @@ def test_dump_targets_deterministic():
     assert dump_targets(data) == dump_targets(data)
 
 
+def test_dump_targets_roundtrip_override_and_inherited():
+    data = {"default_alias": "old", "targets": {
+        "old": {"app_token": "a", "table_id": "t", "record_id": "r"},
+        "new": {"app_token": "b", "table_id": "u", "record_id": "s",
+                "bill_app_token": "bill", "bill_table_id": "table"},
+    }}
+    parsed = tomllib.loads(dump_targets(data))["targets"]
+    assert "bill_app_token" not in parsed["old"]
+    assert "bill_table_id" not in parsed["old"]
+    assert parsed["new"]["bill_app_token"] == "bill"
+    assert parsed["new"]["bill_table_id"] == "table"
+
+
 # =============================================================================
 # dump_profile
 # =============================================================================

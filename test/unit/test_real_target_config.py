@@ -7,7 +7,7 @@ import pytest
 
 from app.config import get_settings
 from app.main import app, lifespan
-from app.target_registry import TargetRegistry, TargetRegistryConfigError
+from app.target_registry import TargetRegistry, TargetRegistryConfigError, TargetSelectorError, validate_targets
 
 
 async def test_real_registry_loads_and_saves_targets(tmp_path: Path) -> None:
@@ -81,3 +81,49 @@ async def test_real_legacy_registry_is_readable_but_not_writable() -> None:
             })
     assert saved.status_code == 409
     assert saved.json()["detail"]["error"]["code"] == "LEGACY_MODE"
+
+
+@pytest.mark.parametrize("override", [
+    {"bill_app_token": "a"}, {"bill_table_id": "b"},
+    {"bill_app_token": None, "bill_table_id": "b"},
+    {"bill_app_token": "a", "bill_table_id": None},
+    {"bill_app_token": "", "bill_table_id": "b"},
+    {"bill_app_token": "a", "bill_table_id": "  "},
+    {"bill_app_token": 42, "bill_table_id": "b"},
+    {"bill_app_token": "a", "bill_table_id": False},
+])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_invalid_bill_override_rejected(override: dict, enabled: bool) -> None:
+    target = {"app_token": "a", "table_id": "t", "record_id": "r"}
+    data = {"default_alias": "default", "targets": {
+        "default": target, "other": {**target, **override, "enabled": enabled},
+    }}
+    with pytest.raises(TargetRegistryConfigError):
+        validate_targets(data, original_field_name_default="raw")
+
+
+def test_target_override_trimmed_and_old_target_inherits(tmp_path: Path) -> None:
+    path = tmp_path / "targets.toml"
+    path.write_text(
+        'default_alias = "old"\n[targets.old]\napp_token = "a"\ntable_id = "t"\nrecord_id = "r"\n'
+        '[targets.new]\nyear = 2026\napp_token = "a"\ntable_id = "t"\nrecord_id = "r"\n'
+        'bill_app_token = " bill "\nbill_table_id = " table "\n', encoding="utf-8",
+    )
+    registry = TargetRegistry(replace(get_settings(), feishu_targets_file=path))
+    registry.load_initial()
+    old = registry.resolve(None, None)
+    new = registry.resolve("new", 2026)
+    assert (old.bill_app_token, old.bill_table_id) == (None, None)
+    assert (new.bill_app_token, new.bill_table_id) == ("bill", "table")
+    with pytest.raises(TargetSelectorError):
+        registry.resolve("old", 2026)
+
+
+@pytest.mark.parametrize("year", [None, 2026])
+def test_explicit_empty_alias_never_uses_default_or_year(tmp_path: Path, year: int | None) -> None:
+    path = tmp_path / "targets.toml"
+    path.write_text('default_alias = "a"\n[targets.a]\nyear = 2026\napp_token = "a"\ntable_id = "t"\nrecord_id = "r"\n', encoding="utf-8")
+    registry = TargetRegistry(replace(get_settings(), feishu_targets_file=path))
+    registry.load_initial()
+    with pytest.raises(TargetSelectorError):
+        registry.resolve("", year)
