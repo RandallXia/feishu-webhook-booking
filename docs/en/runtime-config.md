@@ -75,9 +75,21 @@ year = 2026
 app_token = "bascn_replace_me_2026"
 table_id = "tbl_replace_me_2026"
 record_id = "rec_replace_me_2026"
+bill_app_token = "bascn_replace_me_bill_2026"
+bill_table_id = "tbl_replace_me_bill_2026"
 original_field_name = "原始信息"
 enabled = true
 ```
+
+These are placeholder identifiers. One container can serve both books: `2025` omits both bill keys and inherits the required `[bill].app_token` and `[bill].table_id` from `ai-profile.toml`; `2026` supplies its own complete bill destination. The extraction target's `app_token`, `table_id`, and `record_id` still determine where the original text and summary are written.
+
+`bill_app_token` and `bill_table_id` are optional but must be provided together as non-empty strings; surrounding whitespace is trimmed. A partial pair, null, wrong type, empty or whitespace-only value is invalid, even for disabled targets. Remove both keys to clear an override and restore inheritance. Invalid overrides, inaccessible tables, and invalid selectors never fall back to the global destination. Existing configurations and legacy single-target mode inherit the global `[bill]`.
+
+All books share the profile's field mappings. The Feishu app needs access to every destination table; each bill table needs the mapped fields and types, and each shared single-select `fallback` must exist in that table's options. Other options may differ between tables. With AI enabled, saving targets or profile validates all enabled books; a failed validation does not write the file.
+
+The admin page offers inherit or override per book and a book selector for profile inspection and dry-run. Omitting the selector uses the default book; an explicitly empty, unknown, or disabled alias never falls back. The original text is written first. If the selected bill table's fields or options cannot be validated, the request can then return `503 AI_PROFILE_UNAVAILABLE` without calling AI, writing the summary, or creating a bill. Correct the configuration and retry.
+
+On NAS with the default `./runtime:/runtime:ro` mount, edit configuration on the host, then wait for hot reload or call `POST /admin/config/reload` with `X-Admin-Token`; UI saves return `409 RUNTIME_READONLY`. Host edits to the two files are not atomic together, so avoid sending requests while changing them. See [AI extraction pipeline](ai-pipeline.md).
 
 ### Registry rules enforced by the code
 
@@ -114,6 +126,7 @@ Example pattern:
 host runtime file               ->  container path                 ->  env key
 ./runtime/feishu-webhook.env    ->  /runtime/feishu-webhook.env    ->  FEISHU_ENV_FILE
 ./runtime/feishu-targets.toml   ->  /runtime/feishu-targets.toml   ->  FEISHU_TARGETS_FILE
+./runtime/ai-profile.toml       ->  /runtime/ai-profile.toml       ->  AI_PROFILE_FILE
 ```
 
 ## Dynamic annual book switching
