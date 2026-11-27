@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import tomllib
 from dataclasses import replace
@@ -45,6 +46,327 @@ from app.target_registry import (
 ADMIN_TOKEN = "test-admin-token"
 TEST_BASE_URL = "http://testserver"
 _STATIC_DIR = Path(__file__).resolve().parents[2] / "app" / "static"
+
+# Optional real-DOM harness. Uses an existing host Playwright installation;
+# no project dependency or production-only testing seam is introduced.
+# 可选真实 DOM 测试，复用主机已有 Playwright，不增加项目依赖。
+_BOOK_DOM_SCRIPT = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { chromium } = require(process.env.FEISHU_UI_PLAYWRIGHT_MODULE);
+(async () => {
+  const browser = await chromium.launch({channel:'chrome', headless:true});
+  const page = await browser.newPage({viewport:{width:1440,height:1000}});
+  const requests = [];
+  const scenario=process.env.FEISHU_UI_SCENARIO;
+  let holdInspect = false;
+  let releaseInspect;
+  const inspectGate = new Promise(resolve=>{releaseInspect=resolve;});
+  let inspectStarted;
+  const inspectPending = new Promise(resolve=>{inspectStarted=resolve;});
+  let generation = 1;
+  let targets = ['2026','2025'].map(alias => ({alias,year:Number(alias),
+    app_token:'extract'+alias,table_id:'tbl'+alias,record_id:'rec'+alias,
+    enabled:true,original_field_name:'原始信息',
+    bill_app_token:'bill'+alias,bill_table_id:'billTbl'+alias}));
+  const root = process.env.FEISHU_UI_ROOT;
+  const capture = async name => {
+    if (process.env.FEISHU_UI_CAPTURE_DIR)
+      await page.screenshot({path:process.env.FEISHU_UI_CAPTURE_DIR+'/'+name+'.png'});
+  };
+  try {
+    await page.route('**/*', async route => {
+      const request = route.request();
+      const u = new URL(request.url());
+      assert.equal(u.origin, 'http://task4.local', 'Unexpected external request');
+      const payload = request.postDataJSON();
+      requests.push({path:u.pathname,query:u.search,method:request.method(),body:payload});
+      if(u.pathname === '/admin/ai') return route.fulfill({contentType:'text/html',
+        body:fs.readFileSync(root+'/app/static/admin.html','utf8')});
+      if(u.pathname.startsWith('/admin/ai/assets/')) {
+        const name=u.pathname.split('/').pop();
+        return route.fulfill({contentType:name.endsWith('.js')?'application/javascript':
+          name.endsWith('.css')?'text/css':'image/svg+xml',
+          body:fs.readFileSync(root+'/app/static/'+name)});
+      }
+      let body;
+      if(u.pathname==='/admin/config/targets') {
+        if(request.method()==='PUT' && scenario==='server-error') return route.fulfill({status:422,
+          contentType:'application/json',body:JSON.stringify({detail:{errors:[
+            {path:'targets[1].bill_table_id',message:'table unavailable'}]}})});
+        if(request.method()==='PUT' && scenario==='stale') return route.fulfill({status:409,
+          contentType:'application/json',body:JSON.stringify({detail:{error:{code:'STALE_WRITE'}}})});
+        if(request.method()==='PUT') {targets=payload.targets;generation++;}
+        body=request.method()==='PUT'?{success:true,generation}:
+          {targets,default_alias:'2026',generation};
+      } else if(u.pathname==='/admin/config/profile') body={generation:1,
+        prompt_header:'shared prompt',summary_field:'精简原始数据',
+        bill:{app_token:'global',table_id:'tblGlobal'},fields:[
+          {ai_key:'amount',feishu_field:'金额',type:'number',target:'bill',prompt:'saved amount'}]};
+      else if(u.pathname==='/admin/ai/profile' || u.pathname==='/admin/ai/test') {
+        const alias=(payload && payload.book_alias)||u.searchParams.get('book_alias')||'2026';
+        if(holdInspect && alias==='2026' && u.pathname==='/admin/ai/profile') {
+          inspectStarted(); await inspectGate;
+        }
+        const target=targets.find(t=>t.alias===alias);
+        body={book_alias:alias,registry:{generation:1,config_valid:true},provider:'openai',
+          model:'fake',profile:{fields:[]},whitelists:{'<img src=x onerror=alert(1)>':['safe']},
+          bill_destination:{app_token:target.bill_app_token||'global',
+            table_id:target.bill_table_id||'tblGlobal',source:target.bill_app_token?'target':'profile'},
+          ai_status:'succeeded',extracted:{amount:42},bill_fields:{金额:42}};
+      } else if(u.pathname==='/admin/config/env') body={ai:{ai_model:'fake'},other:{},env_file:'fake.env'};
+      else if(u.pathname==='/admin/ai/history') body={items:[],enabled:true};
+      else if(u.pathname==='/admin/feishu/fields') body={fields:[
+        {name:'精简原始数据',type:'text'},{name:'金额',type:'number'}]};
+      else if(u.pathname==='/admin/feishu/tables') body={tables:[
+        {table_id:'tblGlobal',name:'Global'}, {table_id:'picked',name:'Picked bill table'}]};
+      else if(u.pathname==='/admin/feishu/parse-url') body={app_token:'parsedBill',table_id:'picked'};
+      else throw new Error('Unmocked endpoint '+u.pathname);
+      await route.fulfill({contentType:'application/json',body:JSON.stringify(body)});
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('admin_ai_token','mock-token');
+      localStorage.setItem('admin_ai_lang','en');
+    });
+    page.on('dialog', dialog => {console.log('Dialog:',dialog.type());return dialog.accept();});
+    page.on('pageerror', error => console.error('Page error:',error.message));
+    await page.goto('http://task4.local/admin/ai');
+    await page.locator('.alias-card').first().waitFor();
+    await page.waitForFunction(()=>document.querySelector('#bill-fields-list .prompt-input'));
+    const cards = page.locator('.alias-card');
+    const first=cards.nth(0), second=cards.nth(1);
+    const saves=()=>requests.filter(r=>r.path==='/admin/config/targets'&&r.method==='PUT');
+    const save=async()=>{
+      const response=page.waitForResponse(r=>r.url().endsWith('/admin/config/targets')&&r.request().method()==='PUT');
+      await page.locator('#save-targets-btn').click(); await response;
+      await page.waitForFunction(()=>!document.querySelector('#save-targets-btn').disabled);
+    };
+    if(process.env.FEISHU_UI_CAPTURE_BASELINE) {
+      await page.locator('#extract-section').scrollIntoViewIfNeeded();
+      await capture('task4-before-desktop');
+      await page.setViewportSize({width:390,height:844});
+      await page.locator('#extract-section').scrollIntoViewIfNeeded();
+      await capture('task4-before-mobile');
+      await page.setViewportSize({width:1440,height:1000});
+    }
+    assert.equal(await first.evaluate(e=>e.open),false,'Existing aliases stay collapsed');
+    await first.locator('summary').click(); await second.locator('summary').click();
+    if(scenario==='pairs') {
+      await first.locator('.bill-app-token-input').fill(' editedA ');
+      await first.locator('.bill-table-id-input').fill(' tableA ');
+      await second.locator('.bill-app-token-input').fill('editedB');
+      await second.locator('.bill-table-id-input').fill('tableB');
+      await save();
+      assert.deepEqual(saves().at(-1).body.targets.map(t=>[t.bill_app_token,t.bill_table_id]),
+        [['editedA','tableA'],['editedB','tableB']]);
+      await page.reload(); await first.locator('summary').click();
+      assert.equal(await first.locator('.bill-app-token-input').inputValue(),'editedA');
+      assert.equal(await second.locator('.bill-table-id-input').inputValue(),'tableB');
+    } else if(scenario==='dirty-pending') {
+      let releaseSave, saveStarted;
+      const saveGate=new Promise(resolve=>{releaseSave=resolve;});
+      const pendingSave=new Promise(resolve=>{saveStarted=resolve;});
+      await page.route('**/admin/config/targets',async route=>{
+        if(route.request().method()==='PUT') {saveStarted(); await saveGate;}
+        await route.fallback();
+      });
+      await first.locator('.bill-app-token-input').fill('submittedBill');
+      const response=page.waitForResponse(r=>r.url().endsWith('/admin/config/targets')&&r.request().method()==='PUT');
+      await page.locator('#save-targets-btn').click(); await pendingSave;
+      await first.locator('.bill-app-token-input').fill('newer draft');
+      releaseSave(); await response;
+      await page.waitForFunction(()=>!document.querySelector('#save-targets-btn').disabled);
+      const dialogs=[];
+      page.on('dialog',dialog=>dialogs.push(dialog.type()));
+      await page.locator('#test-prompt-btn').click();
+      await page.waitForFunction(()=>!document.querySelector('#test-prompt-btn').disabled);
+      assert.equal(saves().at(-1).body.targets[0].bill_app_token,'submittedBill');
+      assert.equal(await first.locator('.bill-app-token-input').inputValue(),'newer draft');
+      assert.deepEqual(dialogs,['confirm'],'A completed save must retain edits made while pending');
+    } else if(scenario==='dirty-save') {
+      const dialogs=[];
+      page.on('dialog', dialog=>dialogs.push(dialog.type()));
+      const test=async()=>{
+        await page.locator('#test-prompt-btn').click();
+        await page.waitForFunction(()=>!document.querySelector('#test-prompt-btn').disabled);
+      };
+      const saveSection=async scope=>{
+        const selector=scope==='profile'?'#save-profile-btn':'#save-env-btn';
+        const response=page.waitForResponse(r=>r.url().endsWith('/admin/config/'+scope)&&r.request().method()==='PUT');
+        await page.locator(selector).click(); await response;
+        await page.waitForFunction(s=>!document.querySelector(s).disabled,selector);
+      };
+      await page.locator('#prompt-header').fill('unsaved shared prompt');
+      await test();
+      assert.deepEqual(dialogs,['confirm'],'Control: unsaved prompt must trigger confirmation');
+      await first.locator('.bill-app-token-input').fill('savedBill');
+      await save();
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('savedBill'));
+      await test();
+      assert.equal(await page.locator('#prompt-header').inputValue(),'unsaved shared prompt');
+      assert.equal(requests.filter(r=>r.path==='/admin/config/profile'&&r.method==='PUT').length,0);
+      assert.deepEqual(dialogs,['confirm','confirm'],
+        'Saving targets must retain the unsaved shared-prompt dirty warning');
+      await saveSection('profile'); await test();
+      assert.equal(dialogs.length,2,'Saving the last dirty section clears the warning');
+      await first.locator('.bill-app-token-input').fill('unsaved target');
+      await saveSection('profile'); await test();
+      assert.equal(dialogs.length,3,'Saving profile must retain unsaved targets');
+      await save(); await test();
+      assert.equal(dialogs.length,3,'Saving targets clears its own dirty state');
+      await page.locator('#ai-model-input').fill('unsaved model');
+      await save(); await test();
+      assert.equal(dialogs.length,4,'Saving targets must retain unsaved env');
+      await saveSection('env'); await test();
+      assert.equal(dialogs.length,4,'Saving env clears its own dirty state');
+      await page.locator('#prompt-header').fill('another unsaved prompt');
+      await saveSection('env'); await test();
+      assert.equal(dialogs.length,5,'Saving env must retain unsaved profile');
+    } else if(scenario==='inherit') {
+      await first.locator('.bill-mode-select').selectOption('profile');
+      await first.locator('summary').click(); await first.locator('summary').click();
+      await first.locator('.bill-mode-select').selectOption('target');
+      assert.equal(await first.locator('.bill-app-token-input').inputValue(),'bill2026');
+      await first.locator('.bill-mode-select').selectOption('profile');
+      await save();
+      assert.equal(Object.hasOwn(saves().at(-1).body.targets[0],'bill_app_token'),false);
+      assert.equal(Object.hasOwn(saves().at(-1).body.targets[0],'bill_table_id'),false);
+    } else if(scenario==='partial') {
+      await first.locator('.bill-table-id-input').fill('');
+      await first.locator('summary').click();
+      await page.locator('#save-targets-btn').click();
+      assert.equal(saves().length,0);
+      assert.equal(await first.evaluate(e=>e.open),true);
+      assert.equal(await first.locator('.bill-table-id-input').getAttribute('aria-invalid'),'true');
+      assert.match(await page.locator('#extract-banner').textContent(),/app_token.*table_id/);
+    } else if(scenario==='selection') {
+      assert.equal(await page.locator('#preview-book-select').inputValue(),'2026');
+      await first.locator('.bill-app-token-input').fill('unsaved');
+      await page.locator('#prompt-header').fill('unsaved shared prompt');
+      await page.locator('[data-feishu-field="金额"] .prompt-input').fill('unsaved field prompt');
+      const focusedPrompt=await page.locator('[data-feishu-field="金额"] .prompt-input').boundingBox();
+      const promptFrame=await page.locator('.bill-table-wrap').boundingBox();
+      assert.ok(focusedPrompt.y>=promptFrame.y &&
+        focusedPrompt.y+focusedPrompt.height<=promptFrame.y+promptFrame.height,
+        'Last-row focused prompt must stay inside the visible table frame');
+      if(process.env.FEISHU_UI_CAPTURE_DIR)
+        await page.locator('.bill-table-wrap').screenshot({path:process.env.FEISHU_UI_CAPTURE_DIR+'/task4-shared-prompt-focused.png'});
+      await page.locator('#preview-book-select').selectOption('2025');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2025'));
+      assert.equal(await page.locator('#profile-panel img').count(),0,'Whitelist names are escaped');
+      await page.locator('#test-prompt-btn').click();
+      await page.waitForFunction(()=>document.querySelector('#result-panel').textContent.includes('billTbl2025'),null,{timeout:3000});
+      assert.equal(requests.filter(r=>r.path==='/admin/ai/test').at(-1).body.book_alias,'2025');
+      assert.equal(await first.locator('.bill-app-token-input').inputValue(),'unsaved');
+      assert.equal(await page.locator('#prompt-header').inputValue(),'unsaved shared prompt');
+      assert.equal(await page.locator('[data-feishu-field="金额"] .prompt-input').inputValue(),'unsaved field prompt');
+      if(process.env.FEISHU_UI_CAPTURE_DIR) {
+        await page.locator('#profile-panel').screenshot({path:process.env.FEISHU_UI_CAPTURE_DIR+'/task4-inspection.png'});
+        await page.locator('#result-panel').screenshot({path:process.env.FEISHU_UI_CAPTURE_DIR+'/task4-dry-run.png'});
+      }
+      await page.locator('#lang-toggle-btn').click();
+      assert.equal(await first.locator('.bill-mode-select option:checked').textContent(),'独立账单表');
+      assert.equal(await first.locator('.bill-app-token-input').inputValue(),'unsaved');
+    } else if(scenario==='save-selection') {
+      await page.locator('#preview-book-select').selectOption('2025');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2025'));
+      await second.locator('.enabled-input').uncheck();
+      await save();
+      assert.equal(await page.locator('#preview-book-select').inputValue(),'2026');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2026'),null,{timeout:3000});
+    } else if(scenario==='404-inspect' || scenario==='404-test') {
+      await page.locator('#preview-book-select').selectOption('2025');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2025'));
+      await page.evaluate(testRequest=>{
+        const baseFetch=window.fetch;
+        window.fetch=(url,options)=>{
+          if(String(url).includes(testRequest?'/admin/ai/test':'/admin/ai/profile?book_alias=2026')) {
+            return Promise.resolve({status:404,ok:false,json:()=>{
+              window.pending404=true;
+              return new Promise(resolve=>{window.release404=()=>resolve({detail:{error:{code:'AI_DISABLED'}}});});
+            }});
+          }
+          return baseFetch(url,options);
+        };
+      },scenario==='404-test');
+      if(scenario==='404-test') await page.locator('#test-prompt-btn').click();
+      else await page.locator('#preview-book-select').selectOption('2026');
+      await page.waitForFunction(()=>window.pending404);
+      await page.locator('#preview-book-select').selectOption(scenario==='404-test'?'2026':'2025');
+      await page.waitForFunction(alias=>document.querySelector('#profile-panel').textContent.includes('billTbl'+alias),scenario==='404-test'?'2026':'2025');
+      await page.evaluate(async()=>{window.release404();await Promise.resolve();await Promise.resolve();});
+      if(scenario==='404-test') assert.equal(await page.locator('#result-panel .disabled-notice').count(),0);
+      else assert.match(await page.locator('#profile-panel').textContent(),/billTbl2025/);
+    } else if(scenario==='server-error' || scenario==='stale') {
+      await second.locator('.bill-table-id-input').fill('keepDraft');
+      await second.locator('summary').click();
+      await save();
+      assert.equal(await second.locator('.bill-table-id-input').inputValue(),'keepDraft');
+      if(scenario==='server-error') {
+        assert.equal(await second.evaluate(e=>e.open),true);
+        assert.equal(await second.locator('.bill-table-id-input').getAttribute('aria-invalid'),'true');
+        assert.match(await page.locator('#extract-banner').textContent(),/table unavailable/);
+      } else assert.match(await page.locator('#extract-banner').textContent(),/edits are retained/);
+    } else if(scenario==='race') {
+      await page.locator('#preview-book-select').selectOption('2025');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2025'));
+      holdInspect=true;
+      await page.locator('#preview-book-select').selectOption('2026'); await inspectPending;
+      await capture('task4-inspect-held');
+      await page.locator('#preview-book-select').selectOption('2025');
+      await page.waitForFunction(()=>document.querySelector('#profile-panel').textContent.includes('billTbl2025'));
+      const oldResponse=page.waitForResponse(r=>r.url().includes('/admin/ai/profile?book_alias=2026'));
+      releaseInspect(); await oldResponse;
+      assert.match(await page.locator('#profile-panel').textContent(),/billTbl2025/);
+      assert.equal(await page.locator('#profile-panel').textContent().then(t=>t.includes('billTbl2026')),false);
+    } else if(scenario==='picker') {
+      await page.setViewportSize({width:390,height:844});
+      await first.locator('.bill-mode-select').focus();
+      await page.keyboard.press('Home'); await page.keyboard.press('Enter');
+      assert.equal(await first.locator('.bill-override').isVisible(),false);
+      await page.keyboard.press('End'); await page.keyboard.press('Enter');
+      assert.equal(await first.locator('.bill-override').isVisible(),true);
+      await first.locator('.bill-url-input').fill('https://feishu.cn/base/parsedBill?table=picked');
+      await first.locator('.bill-override .parse-url-btn').click();
+      await page.waitForFunction(()=>document.querySelector('.bill-app-token-input').value==='parsedBill');
+      await first.locator('.bill-override .load-tables-btn').click();
+      await first.locator('.bill-override .table-select').selectOption('picked');
+      assert.equal(await first.locator('.bill-table-id-input').inputValue(),'picked');
+      assert.equal(await second.locator('.bill-app-token-input').inputValue(),'bill2025');
+    } else throw new Error('Unknown scenario '+scenario);
+    await page.setViewportSize({width:1440,height:1000});
+    await first.locator('.bill-mode-select').scrollIntoViewIfNeeded();
+    await capture('task4-'+scenario+'-desktop');
+    await page.setViewportSize({width:390,height:844});
+    await first.locator('.bill-mode-select').scrollIntoViewIfNeeded();
+    await capture('task4-'+scenario+'-mobile');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Mobile overflow');
+    const evidence=JSON.stringify({scenario,requests:requests.filter(r=>!r.path.includes('/assets/'))},null,2);
+    if(process.env.FEISHU_UI_CAPTURE_DIR)
+      fs.writeFileSync(process.env.FEISHU_UI_CAPTURE_DIR+'/task4-'+scenario+'-requests.json',evidence);
+    console.log(evidence);
+  } catch(error) {
+    console.error(JSON.stringify({requests,state:await page.locator('#result-panel').textContent(),
+      selected:await page.locator('#preview-book-select').inputValue()}));
+    await capture('task4-'+scenario+'-failure');
+    throw error;
+  } finally {await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+
+
+@pytest.mark.parametrize("scenario", ["pairs", "inherit", "partial", "selection", "picker",
+                                     "server-error", "stale", "race", "save-selection",
+                                     "404-inspect", "404-test", "dirty-save", "dirty-pending"])
+def test_per_book_dom_behavior(scenario: str) -> None:
+    """Drive shipped DOM; opt in with the path to an installed Playwright module."""
+    if not os.environ.get("FEISHU_UI_PLAYWRIGHT_MODULE"):
+        pytest.skip("Set FEISHU_UI_PLAYWRIGHT_MODULE to run the real-browser harness")
+    env = dict(os.environ, FEISHU_UI_ROOT=str(_STATIC_DIR.parents[1]),
+               FEISHU_UI_SCENARIO=scenario)
+    result = subprocess.run(["node", "-e", _BOOK_DOM_SCRIPT], env=env,
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 # --- Shared helpers (mirror test_config_targets_api.py) ---
@@ -99,7 +421,7 @@ def _snapshot(targets, default_alias, generation=1):
     )
 
 
-def _mock_registry_healthy(snapshot, *, generation=1):
+def _mock_registry_healthy(snapshot, targets_file, *, generation=1):
     state = {"generation": generation, "snapshot": snapshot}
 
     def _describe():
@@ -113,14 +435,17 @@ def _mock_registry_healthy(snapshot, *, generation=1):
             "source_path": state["snapshot"].source_path,
         }
 
-    def _reload(*, force):
+    def _install(candidate, temporary_file):
+        assert candidate.generation == state["generation"]
+        temporary_file.replace(targets_file)
         state["generation"] += 1
-        return _describe()
+        state["snapshot"] = replace(candidate, generation=state["generation"])
+        return state["snapshot"]
 
     registry = MagicMock(spec=TargetRegistry)
     registry.describe = MagicMock(side_effect=_describe)
-    registry.get_snapshot = MagicMock(return_value=state["snapshot"])
-    registry.reload = MagicMock(side_effect=_reload)
+    registry.get_snapshot = MagicMock(side_effect=lambda: state["snapshot"])
+    registry.install_candidate = MagicMock(side_effect=_install)
     registry.maybe_reload = MagicMock(return_value=None)
     return registry
 
@@ -143,13 +468,13 @@ async def test_targets_get_then_put_round_trip_writes_file(targets_file):
        from the GET response (same targets, base_generation=GET.generation)
     THEN the PUT response status is 200
       AND response.success is True
-      AND response.generation == 2 (reloaded)
+      AND response.generation == 2 (installed)
       AND the file round-trips: re-parsed TOML contains both targets verbatim
     """
     t2026 = FeishuTargetConfig("2026", 2026, "bascn_2026", "tbl_2026", "rec_2026", "原始信息", True)
     t2025 = FeishuTargetConfig("2025", 2025, "bascn_2025", "tbl_2025", "rec_2025", "原始信息", True)
     snap = _snapshot([t2025, t2026], default_alias="2026", generation=1)
-    registry = _mock_registry_healthy(snap, generation=1)
+    registry = _mock_registry_healthy(snap, targets_file, generation=1)
 
     async with lifespan(app):
         app.state.settings = _dynamic_settings(targets_file=targets_file)
@@ -208,7 +533,7 @@ async def test_targets_second_put_same_base_generation_returns_409_stale(targets
     """
     t2026 = FeishuTargetConfig("2026", 2026, "bascn_2026", "tbl_2026", "rec_2026", "原始信息", True)
     snap = _snapshot([t2026], default_alias="2026", generation=1)
-    registry = _mock_registry_healthy(snap, generation=1)
+    registry = _mock_registry_healthy(snap, targets_file, generation=1)
 
     put_body = {
         "default_alias": "2026",

@@ -33,6 +33,17 @@
   var I18N = {
     zh: {
       'app.title': 'AI 配置管理',
+      'book.previewLabel': '检查账本（已保存配置）',
+      'book.default': '默认账本',
+      'book.destination': '账单目的地',
+      'book.inherit': '继承全局账单表',
+      'book.override': '独立账单表',
+      'book.source': '配置来源',
+      'book.unknown': '目的地不可用，请检查配置后重新加载',
+      'book.pairRequired': '独立账单表需要同时填写 bill_app_token 和 bill_table_id；也可选择继承全局账单表。',
+      'book.urlLabel': '账单表 URL（可选，用于解析）',
+      'book.sharedMapping': '全局账单表用于继承；字段映射、摘要字段与提示词由所有账本共享。',
+      'book.conflict': '配置已被修改，草稿已保留。请在另一个页面加载最新配置并比较后重试。',
       'app.subtitle': 'AI Config Admin — 配置浏览与编辑',
       'lang.toggle': 'EN', // button always shows the TARGET language
       'setup.title': '初始化设置',
@@ -153,7 +164,7 @@
       'aiConn.validationFailed': '校验失败',
       'extract.title': '提取表配置',
       'extract.saveBtn': '保存全部账本',
-      'extract.addAliasBtn': '➕ 新增账本',
+      'extract.addAliasBtn': '新增账本',
       'extract.placeholder': '点击"新增账本"或加载现有账本',
       'extract.summaryFieldLabel': '摘要字段',
       'extract.summaryFieldHint': '提取表的「精简原始数据」回写字段',
@@ -234,6 +245,17 @@
     },
     en: {
       'app.title': 'AI Config Admin',
+      'book.previewLabel': 'Book to inspect (saved configuration)',
+      'book.default': 'Default book',
+      'book.destination': 'Bill destination',
+      'book.inherit': 'Inherit global bill table',
+      'book.override': 'Separate bill table',
+      'book.source': 'Configuration source',
+      'book.unknown': 'Destination unavailable. Check configuration and load again.',
+      'book.pairRequired': 'A separate bill table requires both bill_app_token and bill_table_id; or select inherit global bill table.',
+      'book.urlLabel': 'Bill table URL (optional, for parsing)',
+      'book.sharedMapping': 'The global bill table is the inherited destination. Field mappings, summary field and prompts are shared by every book.',
+      'book.conflict': 'Configuration changed. Your edits are retained. Load the latest configuration in another page, compare and retry.',
       'app.subtitle': 'AI Config Admin — Config viewer & editor',
       'lang.toggle': '中', // button always shows the TARGET language
       'setup.title': 'Initial Setup',
@@ -355,7 +377,7 @@
       'aiConn.validationFailed': 'Validation failed',
       'extract.title': 'Extract Table Config',
       'extract.saveBtn': 'Save All',
-      'extract.addAliasBtn': '➕ Add Alias',
+      'extract.addAliasBtn': 'Add Alias',
       'extract.placeholder': 'Click "Add Alias" or load existing aliases',
       'extract.summaryFieldLabel': 'Summary Field',
       'extract.summaryFieldHint': 'Extract-table writeback field for 精简原始数据',
@@ -501,6 +523,62 @@
   var testPromptBtn = document.getElementById('test-prompt-btn');
   var resultPanel = document.getElementById('result-panel');
   var statusBar = document.getElementById('status-bar');
+  var previewBookSelect = document.getElementById('preview-book-select');
+  var testBookSelect = document.getElementById('test-book-select');
+  var previewRevision = 0;
+  var profileRequest = 0;
+  var testRequest = 0;
+
+  function selectedBook() {
+    return previewBookSelect.value;
+  }
+
+  function inspectPath() {
+    var alias = selectedBook();
+    return '/admin/ai/profile' + (alias ? '?book_alias=' + encodeURIComponent(alias) : '');
+  }
+
+  function populatePreviewBooks(targets) {
+    var previous = selectedBook();
+    [previewBookSelect, testBookSelect].forEach(function(select) {
+      select.replaceChildren();
+      targets.filter(function(target) { return target.enabled !== false; }).forEach(function(target) {
+        select.appendChild(el('option', { value: target.alias }, target.alias));
+      });
+      if (!select.options.length) select.appendChild(el('option', { value: '', 'data-i18n': 'book.default' }, t('book.default')));
+      select.value = Array.from(select.options).some(function(option) { return option.value === previous; })
+        ? previous : extractDefaultAlias;
+      select.disabled = targets.length === 0;
+    });
+    refreshBookPreview();
+  }
+
+  function refreshBookPreview() {
+    previewRevision++;
+    testRequest++;
+    testPromptBtn.disabled = false;
+    resultPanel.replaceChildren(el('p', { className: 'placeholder' }, t('tester.resultPlaceholder')));
+    loadProfileBtn.click();
+    refreshStatus();
+  }
+
+  [previewBookSelect, testBookSelect].forEach(function(select) {
+    select.addEventListener('change', function() {
+      previewBookSelect.value = select.value;
+      testBookSelect.value = select.value;
+      refreshBookPreview();
+    });
+  });
+
+  function destinationHtml(data) {
+    var destination = data.bill_destination;
+    var html = '<dl class="key-value book-destination"><dt>' + escapeHtml(t('book.previewLabel')) + '</dt><dd>' + escapeHtml(data.book_alias || t('book.default')) + '</dd>';
+    html += '<dt>' + escapeHtml(t('book.destination')) + '</dt><dd>';
+    html += destination ? escapeHtml(destination.app_token) + ' / ' + escapeHtml(destination.table_id) : escapeHtml(t('book.unknown'));
+    html += '</dd>';
+    if (destination) html += '<dt>' + escapeHtml(t('book.source')) + '</dt><dd>' + escapeHtml(t(destination.source === 'target' ? 'book.override' : 'book.inherit')) + '</dd>';
+    return html + '</dl>';
+  }
 
   // ===========================================================================
   // Generic utils (todo 8 skeleton — reused by todo 9/10/11)
@@ -521,6 +599,7 @@
       method: options.method || 'GET',
       headers: headers,
       body: options.body,
+      signal: AbortSignal.timeout(30000),
     }).then(function(response) {
       if (response.status === 401) {
         // Stored token is invalid → clear it and show the setup card so the
@@ -605,7 +684,9 @@
   // banner. Network error → warn banner. Never throws.
   function refreshStatus() {
     if (!statusBar) return Promise.resolve();
-    return api('/admin/ai/profile').then(function(data) {
+    var revision = previewRevision;
+    return api(inspectPath()).then(function(data) {
+      if (revision !== previewRevision) return;
       var registry = data.registry || {};
       var configValid = registry.config_valid !== false;
       if (!configValid) {
@@ -619,6 +700,7 @@
       var gen = registry.generation != null ? registry.generation : '-';
       showBanner(statusBar, 'ok', t('status.configOk') + gen);
     }).catch(function(err) {
+      if (revision !== previewRevision) return;
       if (err && err.status === 404) {
         var body = err.body;
         if (body && body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
@@ -675,7 +757,7 @@
     if (!configValid) {
       var errMsg = registry.last_reload_error || t('overview.unknownError');
       profilePanel.innerHTML =
-        '<div class="status-tag status-err">' + escapeHtml(t('status.configInvalid')) + '</div>' +
+        destinationHtml(data) + '<div class="status-tag status-err">' + escapeHtml(t('status.configInvalid')) + '</div>' +
         '<div class="error-box">' +
           '<strong>' + escapeHtml(t('overview.lastReloadError')) + '</strong><br/>' +
           '<span style="font-family:monospace;font-size:0.8rem;">' + escapeHtml(errMsg) + '</span>' +
@@ -683,7 +765,7 @@
       return;
     }
 
-    var html = '<div class="key-value">';
+    var html = destinationHtml(data) + '<div class="key-value">';
     html += '<dt>' + escapeHtml(t('overview.statusLabel')) + '</dt><dd><span class="status-tag status-ok">' + escapeHtml(t('overview.enabled')) + '</span></dd>';
     html += '<dt>' + escapeHtml(t('overview.providerLabel')) + '</dt><dd>' + escapeHtml(data.provider || '-') + '</dd>';
     html += '<dt>' + escapeHtml(t('overview.modelLabel')) + '</dt><dd>' + escapeHtml(data.model || '-') + '</dd>';
@@ -725,7 +807,7 @@
       html += '<dt>' + escapeHtml(t('overview.whitelist')) + '</dt><dd>' + escapeHtml(String(keys.length)) + escapeHtml(t('overview.fieldsUnit'));
       if (keys.length > 0) {
         html += '<div style="font-size:0.75rem;color:#86868b;margin-top:2px;">' +
-          keys.map(function(k) { return k + ' (' + whitelists[k].length + t('overview.optionsUnit') + ')'; }).join(', ') +
+          keys.map(function(k) { return escapeHtml(k + ' (' + whitelists[k].length + t('overview.optionsUnit') + ')'); }).join(', ') +
         '</div>';
       }
       html += '</dd></div>';
@@ -740,7 +822,7 @@
       return;
     }
 
-    var html = '';
+    var html = destinationHtml(data);
 
     var status = data.ai_status || 'unknown';
     var statusClass = status === 'succeeded' ? 'status-ok' : (status === 'failed' ? 'status-err' : 'status-warn');
@@ -822,15 +904,19 @@
     }
 
     saveToken();
+    var requestId = ++profileRequest;
+    var revision = previewRevision;
     profilePanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('overview.loading')) + '</p>';
 
     try {
-      var response = await fetch(API_BASE + '/admin/ai/profile', {
-        headers: authHeaders()
+      var response = await fetch(API_BASE + inspectPath(), {
+        headers: authHeaders(), signal: AbortSignal.timeout(30000)
       });
+      if (requestId !== profileRequest || revision !== previewRevision) return;
       if (handle401(response)) return;
       if (response.status === 404) {
         var body = await response.json();
+        if (requestId !== profileRequest || revision !== previewRevision) return;
         if (body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
           renderProfile({ error: { code: 'AI_DISABLED' } });
           return;
@@ -843,14 +929,17 @@
         return;
       }
       var data = await response.json();
+      if (requestId !== profileRequest || revision !== previewRevision) return;
       renderProfile(data);
     } catch (err) {
+      if (requestId !== profileRequest || revision !== previewRevision) return;
       profilePanel.innerHTML = '<div class="error-box">' + escapeHtml(t('overview.networkError')) + escapeHtml(err.message) + '</div>';
     }
   });
 
   // --- Test Prompt (existing) ---
   if (testPromptBtn) testPromptBtn.addEventListener('click', async function() {
+    if (testPromptBtn.disabled) return;
     var token = getToken();
     if (!token) {
       alert(t('tester.needToken'));
@@ -866,17 +955,24 @@
     }
 
     saveToken();
+    var requestId = ++testRequest;
+    testPromptBtn.disabled = true;
+    var revision = previewRevision;
+    var payload = { text: text };
+    if (selectedBook()) payload.book_alias = selectedBook();
     resultPanel.innerHTML = '<p class="placeholder">' + escapeHtml(t('tester.testing')) + '</p>';
 
     try {
       var response = await fetch(API_BASE + '/admin/ai/test', {
         method: 'POST',
         headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        body: JSON.stringify({ text: text })
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(30000)
       });
+      if (requestId !== testRequest || revision !== previewRevision) return;
       if (handle401(response)) return;
       if (response.status === 404) {
         var body = await response.json();
+        if (requestId !== testRequest || revision !== previewRevision) return;
         if (body.detail && body.detail.error && body.detail.error.code === 'AI_DISABLED') {
           renderTestResult({ error: { code: 'AI_DISABLED' } });
           return;
@@ -885,9 +981,17 @@
         return;
       }
       var data = await response.json();
+      if (requestId !== testRequest || revision !== previewRevision) return;
+      if (!response.ok) {
+        showError(resultPanel, data.detail && data.detail.error ? data.detail.error.message : 'HTTP ' + response.status);
+        return;
+      }
       renderTestResult(data);
     } catch (err) {
+      if (requestId !== testRequest || revision !== previewRevision) return;
       resultPanel.innerHTML = '<div class="error-box">' + escapeHtml(t('overview.networkError')) + escapeHtml(err.message) + '</div>';
+    } finally {
+      if (requestId === testRequest) testPromptBtn.disabled = false;
     }
   });
 
@@ -1310,7 +1414,7 @@
   function parseErrorPath(path) {
     if (typeof path !== 'string') return null;
     if (path === 'default_alias') return { defaultAlias: true };
-    var m = path.match(/^targets\[(\d+)\](?:\.(\w+))?$/);
+    var m = path.match(/^targets\[(\d+)\](?:\.(\w+)(?:[.\[].*)?)?$/);
     if (!m) return null;
     var loc = { cardIndex: parseInt(m[1], 10) };
     if (m[2]) loc.field = m[2];
@@ -1334,6 +1438,7 @@
       method: 'POST',
       body: JSON.stringify({ url: url }),
     }).then(function(parsed) {
+      if (urlInput.value.trim() !== url) return;
       var appInput = cardEl.querySelector('.app-token-input');
       var tblInput = cardEl.querySelector('.table-id-input');
       appInput.value = parsed.app_token || '';
@@ -1342,6 +1447,7 @@
       status.appendChild(el('span', { className: 'status-tag status-ok' }, '✓ ' + (parsed.app_token || '')));
       var sel = cardEl.querySelector('.table-select');
       if (sel) selectTableOption(sel, parsed.table_id);
+      markDirty('targets');
     }).catch(function(err) {
       while (status.firstChild) status.removeChild(status.firstChild);
       var msg = t('extract.parseFailed');
@@ -1361,6 +1467,10 @@
         return;
       }
     }
+    if (tableId) {
+      sel.appendChild(el('option', { value: tableId }, tableId));
+      sel.value = tableId;
+    }
   }
 
   // GET /admin/feishu/tables → populate the card's table <select>. Each option
@@ -1377,6 +1487,7 @@
     sel.appendChild(el('option', { value: '' }, t('extract.loading')));
 
     api('/admin/feishu/tables?app_token=' + encodeURIComponent(appToken)).then(function(data) {
+      if (cardEl.querySelector('.app-token-input').value.trim() !== appToken) return;
       while (sel.firstChild) sel.removeChild(sel.firstChild);
       sel.appendChild(el('option', { value: '' }, t('extract.selectTable')));
       var tables = data.tables || [];
@@ -1428,6 +1539,7 @@
             var rows = recordContainer.querySelectorAll('.record-row');
             for (var j = 0; j < rows.length; j++) rows[j].style.background = '';
             rowEl.style.background = '#e3f2fd';
+            markDirty('targets');
           };
         }(item.record_id, row));
         recordContainer.appendChild(row);
@@ -1460,6 +1572,7 @@
   // Build one alias card. target is the GET shape {alias, year, app_token,
   // table_id, record_id, original_field_name, enabled}; canDelete is false for
   // the default_alias card (server requires the default to exist).
+  var aliasControlId = 0;
   function renderAliasCard(target, defaultAlias, canDelete) {
     target = target || {};
     var card = el('details', { className: 'card alias-card', 'data-alias': target.alias || '' });
@@ -1600,11 +1713,61 @@
     enGroup.appendChild(enLabel);
     body.appendChild(enGroup);
 
+    var billId = 'alias-bill-' + (++aliasControlId);
+    var destination = el('div', { className: 'alias-bill-destination' });
+    var modeLabel = el('label', { for: billId, 'data-i18n': 'book.destination' }, t('book.destination'));
+    var mode = el('select', { id: billId, className: 'bill-mode-select' });
+    mode.appendChild(el('option', { value: 'profile', 'data-i18n': 'book.inherit' }, t('book.inherit')));
+    mode.appendChild(el('option', { value: 'target', 'data-i18n': 'book.override' }, t('book.override')));
+    mode.value = Object.prototype.hasOwnProperty.call(target, 'bill_app_token') ||
+      Object.prototype.hasOwnProperty.call(target, 'bill_table_id') ? 'target' : 'profile';
+    destination.appendChild(modeLabel);
+    destination.appendChild(mode);
+    var override = el('div', { className: 'bill-override', id: billId + '-override' });
+    mode.setAttribute('aria-controls', override.id);
+    var billUrlLabel = el('label', { for: billId + '-url', 'data-i18n': 'book.urlLabel' }, t('book.urlLabel'));
+    var billUrl = el('input', { type: 'text', id: billId + '-url', className: 'bill-url-input',
+      placeholder: 'https://xxx.feishu.cn/base/{app_token}?table={table_id}' });
+    var billParse = el('button', { type: 'button', className: 'btn btn-secondary parse-url-btn',
+      'data-i18n': 'extract.parseUrlBtn' }, t('extract.parseUrlBtn'));
+    override.appendChild(billUrlLabel);
+    override.appendChild(billUrl);
+    override.appendChild(billParse);
+    override.appendChild(el('div', { className: 'parse-status', 'aria-live': 'polite' }));
+    override.appendChild(el('label', { for: billId + '-app' }, 'bill_app_token'));
+    var billApp = el('input', { type: 'text', id: billId + '-app', className: 'bill-app-token-input app-token-input' });
+    billApp.value = target.bill_app_token || '';
+    override.appendChild(billApp);
+    override.appendChild(el('label', { for: billId + '-table' }, 'bill_table_id'));
+    var billTable = el('input', { type: 'text', id: billId + '-table', className: 'bill-table-id-input table-id-input' });
+    billTable.value = target.bill_table_id || '';
+    override.appendChild(billTable);
+    override.appendChild(el('label', { for: billId + '-picker', 'data-i18n': 'extract.tableLabel' }, t('extract.tableLabel')));
+    var billPicker = el('select', { id: billId + '-picker', className: 'table-select' });
+    billPicker.appendChild(el('option', { value: billTable.value }, billTable.value || t('extract.selectTable')));
+    override.appendChild(billPicker);
+    var billLoad = el('button', { type: 'button', className: 'btn btn-secondary load-tables-btn',
+      'data-i18n': 'extract.loadTablesBtn' }, t('extract.loadTablesBtn'));
+    override.appendChild(billLoad);
+    override.appendChild(el('div', { className: 'table-status', 'aria-live': 'polite' }));
+    destination.appendChild(override);
+    body.appendChild(destination);
+    function applyBillMode() {
+      override.hidden = mode.value === 'profile';
+      mode.setAttribute('aria-expanded', String(!override.hidden));
+    }
+    applyBillMode();
+    mode.addEventListener('change', applyBillMode);
+    billParse.addEventListener('click', function() { parseUrl(billUrl, override); });
+    billLoad.addEventListener('click', function() { loadTables(billLoad, override); });
+    billPicker.addEventListener('change', function() { billTable.value = billPicker.value; });
+
     if (canDelete) {
       var delBtn = el('button', { className: 'btn btn-secondary', type: 'button' }, t('extract.deleteBtn'));
       delBtn.style.marginTop = '8px';
       delBtn.addEventListener('click', function() {
         if (targetsList) targetsList.removeChild(card);
+        markDirty('targets');
       });
       body.appendChild(delBtn);
     } else {
@@ -1627,7 +1790,7 @@
         var yearInt = parseInt(yearRaw, 10);
         if (!isNaN(yearInt) && yearInt > 0) year = yearInt;
       }
-      targets.push({
+      var target = {
         alias: c.querySelector('.alias-input').value.trim(),
         year: year,
         app_token: c.querySelector('.app-token-input').value.trim(),
@@ -1635,7 +1798,12 @@
         record_id: c.querySelector('.record-id-input').value.trim(),
         original_field_name: c.querySelector('.ofn-input').value.trim() || '原始信息',
         enabled: c.querySelector('.enabled-input').checked,
-      });
+      };
+      if (c.querySelector('.bill-mode-select').value === 'target') {
+        target.bill_app_token = c.querySelector('.bill-app-token-input').value.trim();
+        target.bill_table_id = c.querySelector('.bill-table-id-input').value.trim();
+      }
+      targets.push(target);
     }
     return {
       default_alias: extractDefaultAlias,
@@ -1649,6 +1817,7 @@
     for (var i = 0; i < marked.length; i++) {
       marked[i].classList.remove('field-error');
       marked[i].style.borderColor = '';
+      marked[i].removeAttribute('aria-invalid');
     }
   }
 
@@ -1663,12 +1832,15 @@
       alias: 'alias', year: 'year', app_token: 'app-token',
       table_id: 'table-id', record_id: 'record-id',
       original_field_name: 'ofn', enabled: 'enabled',
+      bill_app_token: 'bill-app-token', bill_table_id: 'bill-table-id',
     };
     var cls = fieldMap[field] || field;
     var input = card.querySelector('.' + cls + '-input');
+    if (field === 'bill' || field === 'fields') input = card.querySelector('.bill-mode-select');
     if (input) {
       input.classList.add('field-error');
       input.style.borderColor = '#c62828';
+      input.setAttribute('aria-invalid', 'true');
     }
   }
 
@@ -1689,6 +1861,7 @@
       extractBaseGeneration = data.generation || 0;
       extractDefaultAlias = data.default_alias || '';
       var targets = data.targets || [];
+      populatePreviewBooks(targets);
       for (var i = 0; i < targets.length; i++) {
         var tgt = targets[i];
         var canDelete = tgt.alias !== extractDefaultAlias;
@@ -1715,6 +1888,7 @@
   // billLoadFields' cache + error-toast pattern.
   function loadExtractFields(appToken, tableId) {
     if (!extractFieldSelect) return Promise.resolve([]);
+    var selectedSummaryField = extractFieldSelect.value;
     while (extractFieldSelect.firstChild) extractFieldSelect.removeChild(extractFieldSelect.firstChild);
     if (!appToken || !tableId) {
       extractFieldSelect.appendChild(el('option', { value: '' }, t('extract.noExtractTable')));
@@ -1732,7 +1906,7 @@
         var f = extractCachedFields[i] || {};
         extractFieldSelect.appendChild(el('option', { value: f.name || '' }, f.name || ''));
       }
-      var pick = pendingSummaryField;
+      var pick = pendingSummaryField || selectedSummaryField;
       if (!pick) {
         // auto-derive: first field whose name contains 精简 or 摘要.
         for (var d = 0; d < extractCachedFields.length; d++) {
@@ -1789,24 +1963,37 @@
   }
 
   if (extractFieldSelect) extractFieldSelect.addEventListener('change', function() {
-    markDirty();
+    markDirty('profile');
   });
 
   if (saveTargetsBtn) saveTargetsBtn.addEventListener('click', function() {
-    if (!extractBanner) return;
-    saveTargetsBtn.disabled = true;
+    if (!extractBanner || saveTargetsBtn.disabled) return;
     var body = gatherTargetsFromBody();
     clearCardErrors();
+    var partial = false;
+    body.targets.forEach(function(target, index) {
+      if (Object.prototype.hasOwnProperty.call(target, 'bill_app_token') &&
+          (!target.bill_app_token || !target.bill_table_id)) {
+        markFieldError(index, 'bill_app_token');
+        markFieldError(index, 'bill_table_id');
+        partial = true;
+      }
+    });
+    if (partial) {
+      showBanner(extractBanner, 'err', t('book.pairRequired'));
+      return;
+    }
+    saveTargetsBtn.disabled = true;
+    var savedRevision = dirtyRevisions.targets;
 
     api('/admin/config/targets', {
       method: 'PUT',
       body: JSON.stringify(body),
     }).then(function(resp) {
       extractBaseGeneration = resp.generation || extractBaseGeneration;
-      clearDirty();
+      clearDirty('targets', savedRevision);
       showBanner(extractBanner, 'ok', t('extract.saved') + resp.generation);
-      refreshStatus();
-      loadExtractTargets();
+      populatePreviewBooks(body.targets);
       // Default-alias extract table may have changed → repopulate summary dropdown.
       refreshExtractFields();
     }).catch(function(err) {
@@ -1814,6 +2001,9 @@
       var detail = err && err.body && err.body.detail;
       if (status === 422 && detail && detail.errors) {
         var errors = detail.errors;
+        showBanner(extractBanner, 'err', errors.map(function(error) {
+          return error.path + ': ' + error.message;
+        }).join('; '));
         for (var i = 0; i < errors.length; i++) {
           var loc = parseErrorPath(errors[i].path);
           if (!loc) continue;
@@ -1833,8 +2023,7 @@
       if (status === 409 && detail && detail.error) {
         var code = detail.error.code;
         if (code === 'STALE_WRITE') {
-          showBanner(extractBanner, 'warn', t('extract.configChangedReloading'));
-          loadExtractTargets();
+          showBanner(extractBanner, 'warn', t('book.conflict'));
           return;
         }
         if (code === 'LEGACY_MODE' || code === 'RUNTIME_READONLY') {
@@ -1862,6 +2051,7 @@
       record_id: '', original_field_name: '原始信息', enabled: true,
     };
     targetsList.appendChild(renderAliasCard(emptyTarget, extractDefaultAlias, true));
+    markDirty('targets');
   });
 
   // ===========================================================================
@@ -1918,7 +2108,7 @@
       status.appendChild(el('span', { className: 'status-tag status-ok' },
         '✓ ' + (parsed.app_token || '')));
       billRenderTokens();
-      markDirty();
+      markDirty('profile');
       billLoadTablesFromAppToken();
     }).catch(function(err) {
       while (status.firstChild) status.removeChild(status.firstChild);
@@ -2013,7 +2203,7 @@
     var tableId = billTableSelect.value;
     billRenderTokens();
     billUpdateTableName();
-    markDirty();
+    markDirty('profile');
     if (appToken && tableId) {
       billLoadFields(appToken, tableId).then(function(fields) {
         renderBillRows(fields);
@@ -2365,17 +2555,15 @@
       derived = false;
       refreshChip();
       billUpdateMatchedCount();
-      markDirty();
+      markDirty('profile');
     });
     typeSel.addEventListener('change', function() {
       // Re-derive fallback if the user flips type to single_select.
       fb = (typeSel.value === 'single_select' && fieldOptions && fieldOptions.length)
         ? fieldOptions[0] : null;
       refreshFallback();
-      markDirty();
+      markDirty('profile');
     });
-    fbSel.addEventListener('change', markDirty);
-    pInput.addEventListener('input', markDirty);
 
     // toggle change → disabled class + control disabled (toggle stays live).
     cb.addEventListener('change', function() {
@@ -2387,7 +2575,7 @@
       pInput.disabled = !on;
       chip.style.display = on ? '' : 'none';
       billUpdateMatchedCount();
-      markDirty();
+      markDirty('profile');
     });
     // apply initial disabled state (controls only; toggle stays live).
     if (!enabled) {
@@ -2618,11 +2806,12 @@
       return;
     }
     renderBillRows(fields);
+    markDirty('profile');
     if (billBanner) showBanner(billBanner, 'info', t('bill.autoDeriveApplied'));
   });
 
   if (saveProfileBtn) saveProfileBtn.addEventListener('click', function() {
-    if (!billBanner) return;
+    if (!billBanner || saveProfileBtn.disabled) return;
     // Cross-table gate: the extract-table summary field is required before
     // the bill profile can be saved (the pipeline writes 精简原始数据 there).
     // Abort the PUT with a banner + error row so the user fixes the extract
@@ -2636,13 +2825,14 @@
     }
     saveProfileBtn.disabled = true;
     var body = billGatherBody();
+    var savedRevision = dirtyRevisions.profile;
     billClearErrors();
     api('/admin/config/profile', {
       method: 'PUT',
       body: JSON.stringify(body),
     }).then(function(resp) {
       billBaseGeneration = resp.generation || billBaseGeneration;
-      clearDirty();
+      clearDirty('profile', savedRevision);
       showBanner(billBanner, 'ok', t('extract.saved') + resp.generation);
       refreshStatus();
     }).catch(function(err) {
@@ -2686,8 +2876,7 @@
       if (status === 409 && detail && detail.error) {
         var code = detail.error.code;
         if (code === 'STALE_WRITE') {
-          showBanner(billBanner, 'warn', t('extract.configChangedReloading'));
-          loadBillProfile();
+          showBanner(billBanner, 'warn', t('book.conflict'));
           return;
         }
         if (code === 'RUNTIME_READONLY') {
@@ -2710,38 +2899,38 @@
   // Dirty-form tracking + AI connection editor + unified save flow
   // (todo 11 — §ai-connection-section + shared debounce/409 logic)
   //
-  // The dirty flag is shared across the extract/bill/env forms: any input
-  // event on a tracked form sets it, every save success clears it, and the
-  // dry-run tester prompts the user before running if it is set. The 409
-  // STALE_WRITE + 409 RUNTIME_READONLY paths are uniform across all three
-  // save buttons (yellow banner + auto-reload on STALE_WRITE).
+  // Track the endpoint that saves an edit, rather than its visual section:
+  // summary_field is displayed with targets but is saved with the profile.
+  // 按保存端点追踪编辑：摘要字段虽放在 targets 区域，仍由 profile 保存。
   // ===========================================================================
 
-  var dirty = false;
+  var dirtyRevisions = { targets: 0, profile: 0, env: 0 };
+  var savedRevisions = { targets: 0, profile: 0, env: 0 };
 
-  // Mark the form dirty — wired to every input/change event on the extract,
-  // bill, and env forms. The dry-run tester consults this before running.
-  function markDirty() {
-    dirty = true;
+  function markDirty(scope) {
+    dirtyRevisions[scope] += 1;
   }
 
   function isDirty() {
-    return dirty;
+    return Object.keys(dirtyRevisions).some(function(scope) {
+      return dirtyRevisions[scope] !== savedRevisions[scope];
+    });
   }
 
-  function clearDirty() {
-    dirty = false;
+  function clearDirty(scope, revision) {
+    // A successful PUT only acknowledges the draft it actually submitted.
+    // PUT 成功只确认实际提交的草稿，保留请求期间的新编辑。
+    savedRevisions[scope] = revision;
   }
 
   // Universal save wrapper: disables the button (debounce), runs the PUT
-  // promise, re-enables the button in the finally, and on success clears the
-  // dirty flag + calls refreshStatus(). The caller supplies the banner + the
+  // promise, re-enables the button in the finally, and calls refreshStatus().
+  // The caller acknowledges its saved revision and supplies the banner + the
   // response handler (ok/err) so the per-section error-mapping stays local.
   // Returns the promise so callers can chain.
   function unifiedSave(btn, bannerEl, runPut, onOk, onErr) {
     if (btn) btn.disabled = true;
     return runPut().then(function(resp) {
-      clearDirty();
       refreshStatus();
       if (onOk) onOk(resp);
     }).catch(function(err) {
@@ -2910,9 +3099,10 @@
   }
 
   if (saveEnvBtn) saveEnvBtn.addEventListener('click', function() {
-    if (!envBanner) return;
+    if (!envBanner || saveEnvBtn.disabled) return;
     envClearErrors();
     var body = envGatherBody();
+    var savedRevision = dirtyRevisions.env;
     unifiedSave(saveEnvBtn, envBanner,
       function() {
         return api('/admin/config/env', {
@@ -2921,6 +3111,7 @@
         });
       },
       function(resp) {
+        clearDirty('env', savedRevision);
         showBanner(envBanner, 'ok', t('aiConn.saved'));
         if (resp && resp.restart_required) showRestartBanner();
         loadEnv();
@@ -2950,27 +3141,21 @@
   });
 
   // ─── Dirty-flag wiring for every form ────────────────────────────────
-  function wireDirty(node) {
+  function wireDirty(node, scope) {
     if (!node) return;
-    node.addEventListener('input', markDirty);
-    node.addEventListener('change', markDirty);
+    node.addEventListener('input', function() { markDirty(scope); });
+    node.addEventListener('change', function() { markDirty(scope); });
   }
-  if (targetsList) {
-    targetsList.addEventListener('input', markDirty);
-    targetsList.addEventListener('change', markDirty);
-  }
-  if (billFieldsList) {
-    billFieldsList.addEventListener('input', markDirty);
-    billFieldsList.addEventListener('change', markDirty);
-  }
-  wireDirty(billPromptHeader);
-  wireDirty(billUrlInput);
-  wireDirty(billAppTokenInput);
-  wireDirty(aiProviderSelect);
-  wireDirty(aiBaseUrlInput);
-  wireDirty(aiModelInput);
-  wireDirty(aiTimeoutInput);
-  wireDirty(aiApiKeyInput);
+  wireDirty(targetsList, 'targets');
+  wireDirty(billFieldsList, 'profile');
+  wireDirty(billPromptHeader, 'profile');
+  wireDirty(billUrlInput, 'profile');
+  wireDirty(billAppTokenInput, 'profile');
+  wireDirty(aiProviderSelect, 'env');
+  wireDirty(aiBaseUrlInput, 'env');
+  wireDirty(aiModelInput, 'env');
+  wireDirty(aiTimeoutInput, 'env');
+  wireDirty(aiApiKeyInput, 'env');
 
   // ─── Dry-run dirty-check guard ─────────────────────────────────────
   if (testPromptBtn) {

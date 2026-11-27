@@ -74,6 +74,10 @@
   <!-- Profile card (existing viewer — migrated verbatim) -->
   <div class="card">
     <div class="card-title" data-i18n="overview.title">配置概览</div>
+    <div class="form-group book-preview">
+      <label for="preview-book-select" data-i18n="book.previewLabel">检查账本（已保存配置）</label>
+      <select id="preview-book-select" disabled><option value="" data-i18n="book.default">默认账本</option></select>
+    </div>
     <div style="margin-bottom: 12px;">
       <button class="btn btn-primary" id="load-profile-btn" data-i18n="overview.loadBtn">加载配置</button>
     </div>
@@ -131,7 +135,7 @@
     <div id="extract-banner"></div>
     <div style="margin-bottom: 12px;">
       <button class="btn btn-primary" id="save-targets-btn" data-i18n="extract.saveBtn">保存全部账本</button>
-      <button class="btn btn-secondary" id="add-alias-btn" data-i18n="extract.addAliasBtn">➕ 新增账本</button>
+      <button class="btn btn-secondary" id="add-alias-btn" data-i18n="extract.addAliasBtn">新增账本</button>
     </div>
     <div id="targets-list">
       <p class="placeholder" data-i18n="extract.placeholder">点击"新增账本"或加载现有账本</p>
@@ -148,6 +152,7 @@
   <!-- Bill-table config section (todo 3 — table + per-field toggles) -->
   <div class="card" id="bill-section">
     <div class="card-title" data-i18n="bill.title">账单表配置</div>
+    <p class="shared-mapping-hint" data-i18n="book.sharedMapping">全局账单表用于继承；字段映射、摘要字段与提示词由所有账本共享。</p>
     <div id="bill-banner"></div>
     <!-- 步行栏：URL→解析→表选择一行 flex -->
     <div class="bill-step-row">
@@ -196,6 +201,10 @@
   <!-- Test card (existing dry-run — migrated verbatim) -->
   <div class="card">
     <div class="card-title" data-i18n="tester.title">提示词测试</div>
+    <div class="form-group book-preview">
+      <label for="test-book-select" data-i18n="book.previewLabel">检查账本（已保存配置）</label>
+      <select id="test-book-select" disabled><option value="" data-i18n="book.default">默认账本</option></select>
+    </div>
     <div class="form-group">
       <label for="test-text" data-i18n="tester.sampleLabel">样本 OCR 文本</label>
       <textarea id="test-text" data-i18n-placeholder="tester.samplePlaceholder" placeholder="输入 OCR 文本进行提取测试">麦当劳 ¥42 微信支付 2026-08-28</textarea>
