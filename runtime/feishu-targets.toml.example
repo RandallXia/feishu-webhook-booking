@@ -1,10 +1,11 @@
-# 语言切换 / Language
-# 中文（默认）: [runtime/feishu-targets.toml.example](runtime/feishu-targets.toml.example)
-# English: [runtime/feishu-targets.toml.example](../docs/en/runtime-config.md)
+# Per-book bill routing examples. Replace every identifier before use.
+# 每账本账单路由示例。使用前请替换所有标识。
 
 default_alias = "2026"
 
 [targets."2025"]
+# Omit both bill keys to inherit the required profile [bill] destination.
+# 同时省略两个账单键，继承 profile 中必填的 [bill] 目标。
 year = 2025
 app_token = "bascn_replace_me_2025"
 table_id = "tbl_replace_me_2025"
@@ -17,10 +18,14 @@ year = 2026
 app_token = "bascn_replace_me_2026"
 table_id = "tbl_replace_me_2026"
 record_id = "rec_replace_me_2026"
+# Override both keys together; partial or empty values are invalid.
+# 两个键必须同时覆盖；只填写一个或填写空值均无效。
+bill_app_token = "bascn_replace_me_bill_2026"
+bill_table_id = "tbl_replace_me_bill_2026"
 original_field_name = "原始信息"
 enabled = true
 
-# 可选禁用目标示例 / Optional disabled target example
+# Optional disabled target example / 可选禁用目标示例
 [targets."test-archive"]
 year = 2024
 app_token = "bascn_replace_me_test"

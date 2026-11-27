@@ -1,11 +1,10 @@
-# AI 提取管线配置 / AI extraction pipeline configuration
-# 宿主机编辑，:ro 挂载，mtime 热重载（与 feishu-targets.toml 同模式）
-# Edit on host, mount :ro, mtime-based hot reload (same as feishu-targets.toml)
+# AI extraction pipeline configuration / AI 提取管线配置
+# Edit on host, mount :ro, and reload on mtime changes, as for targets.
+# 在宿主机编辑，以 :ro 挂载，按 mtime 热重载，与目标配置相同。
 #
-# 注：prompt_header 必须放在所有 [section] 之前 —— TOML 规则：段落后的裸键
-# 会归入该段，而不是顶层。
-# Note: prompt_header MUST appear BEFORE any [section] header — TOML rule: a
+# Note: prompt_header MUST appear BEFORE any [section] header; a
 # bare key after a section header attaches to that section, not the top level.
+# 注：prompt_header 必须放在所有 [section] 之前，段落后的裸键归入该段。
 
 prompt_header = "你是一个账单信息提取助手。从用户提供的 OCR 文本中提取账单字段。"
 
@@ -13,9 +12,15 @@ prompt_header = "你是一个账单信息提取助手。从用户提供的 OCR �
 summary_field = "精简原始数据"
 
 [bill]
+# Required global destination, inherited when a target omits both bill keys.
+# 必填的全局目标，目标配置省略两个账单键时继承。
 app_token = "bascnXXXXXXXXXXXXXXXX"
 table_id = "tblXXXXXXXXXXXXXXXX"
 
+# Mappings are shared by all books. Each bill table needs matching fields and
+# types; every single-select fallback must exist in each table's options.
+# 所有账本共享字段映射。每个账单表都需要匹配的字段和类型；
+# 每个单选 fallback 必须存在于各表的选项中。
 [[fields]]
 ai_key = "summary"
 feishu_field = "精简原始数据"
